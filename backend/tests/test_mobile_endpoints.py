@@ -52,6 +52,20 @@ class TestMobilePanchang:
         # rahu kaal HH:MM – HH:MM
         assert re.match(r"^\d{2}:\d{2}\s*[–-]\s*\d{2}:\d{2}$", d["rahu_kaal"]), d["rahu_kaal"]
 
+    def test_panchang_today_not_estimated(self, session):
+        """is_estimated must be False and sunrise/sunset must NOT be the hardcoded 06:00/18:30 fallback."""
+        r = session.get(f"{API}/mobile/panchang/today", timeout=20)
+        assert r.status_code == 200
+        d = r.json()
+        assert d.get("is_estimated") is False, f"is_estimated should be False, got {d.get('is_estimated')} | sunrise={d.get('sunrise')}"
+        assert d["sunrise"] != "06:00", f"sunrise still hardcoded fallback: {d['sunrise']}"
+        assert d["sunset"] != "18:30", f"sunset still hardcoded fallback: {d['sunset']}"
+
+    @staticmethod
+    def _to_minutes(hhmm: str) -> int:
+        h, m = hhmm.split(":")
+        return int(h) * 60 + int(m)
+
     def test_panchang_mumbai_differs_from_delhi(self, session):
         delhi = session.get(f"{API}/mobile/panchang/today", timeout=20).json()
         mumbai = session.get(
@@ -60,9 +74,44 @@ class TestMobilePanchang:
             timeout=20,
         ).json()
         assert "sunrise" in mumbai and "sunrise" in delhi
-        # Mumbai is east-shifted vs Delhi by ~5° lon — sunrise differs by minutes
-        assert mumbai["sunrise"] != delhi["sunrise"] or mumbai["sunset"] != delhi["sunset"], \
-            f"Expected Mumbai sunrise/sunset to differ from Delhi default. mumbai={mumbai['sunrise']}/{mumbai['sunset']} delhi={delhi['sunrise']}/{delhi['sunset']}"
+        d_sr = self._to_minutes(delhi["sunrise"])
+        m_sr = self._to_minutes(mumbai["sunrise"])
+        diff = abs(m_sr - d_sr)
+        # Mumbai is west-shifted vs Delhi by ~4° lon — sunrise should differ ≥10 min
+        assert diff >= 10, (
+            f"Expected Mumbai vs Delhi sunrise to differ by >=10 minutes; "
+            f"got delhi={delhi['sunrise']} mumbai={mumbai['sunrise']} diff={diff}m"
+        )
+        assert mumbai.get("is_estimated") is False
+        assert delhi.get("is_estimated") is False
+
+    def test_panchang_chennai_differs_from_delhi(self, session):
+        delhi = session.get(f"{API}/mobile/panchang/today", timeout=20).json()
+        chennai = session.get(
+            f"{API}/mobile/panchang/today",
+            params={"lat": 13.0827, "lon": 80.2707, "tz": "Asia/Kolkata"},
+            timeout=20,
+        ).json()
+        assert chennai["sunrise"] != delhi["sunrise"] or chennai["sunset"] != delhi["sunset"], \
+            f"Chennai should differ from Delhi: chennai={chennai['sunrise']}/{chennai['sunset']} delhi={delhi['sunrise']}/{delhi['sunset']}"
+        assert chennai.get("is_estimated") is False
+
+    def test_rahu_kaal_varies_per_location(self, session):
+        """Rahu Kaal is computed from sunrise/sunset so it should vary by location."""
+        delhi = session.get(f"{API}/mobile/panchang/today", timeout=20).json()
+        mumbai = session.get(
+            f"{API}/mobile/panchang/today",
+            params={"lat": 19.0760, "lon": 72.8777, "tz": "Asia/Kolkata"},
+            timeout=20,
+        ).json()
+        chennai = session.get(
+            f"{API}/mobile/panchang/today",
+            params={"lat": 13.0827, "lon": 80.2707, "tz": "Asia/Kolkata"},
+            timeout=20,
+        ).json()
+        # At least Mumbai or Chennai should differ from Delhi
+        assert delhi["rahu_kaal"] != mumbai["rahu_kaal"] or delhi["rahu_kaal"] != chennai["rahu_kaal"], \
+            f"Rahu Kaal identical across locations: delhi={delhi['rahu_kaal']} mumbai={mumbai['rahu_kaal']} chennai={chennai['rahu_kaal']}"
 
 
 # ===================== MANTRA OF DAY =====================

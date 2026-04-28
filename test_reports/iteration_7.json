@@ -1,0 +1,41 @@
+{
+  "summary": "Iteration 7 RETEST: verified swe.rise_trans signature fix in /app/backend/mobile_extras.py. All 15 backend pytest cases pass (4 new location-specific panchang tests + 11 regression). Sunrise/sunset now compute correctly per location and is_estimated=false in every response.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_mobile_endpoints.py",
+    "/app/test_reports/pytest/iter7_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "swe.rise_trans signature fix is correct and uses geopos tuple (lon, lat, alt) as 4th arg with rise_flag/set_flag (CALC_RISE|BIT_DISC_CENTER) as 3rd arg. Result tuple unpacking (rs_ret, rs_tret) and revjul-based UTC->local conversion work as expected.",
+    "is_estimated boolean now correctly surfaces in the response (was a minor item in iteration_6, now closed).",
+    "server.py at >5100 lines remains a maintainability concern (carried over from iteration_6 — not in scope for this retest)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_mobile_endpoints.py (added 4 location-specific tests: not_estimated, mumbai_diff>=10min, chennai_differs, rahu_kaal varies)"
+  ],
+  "success_rate": {"backend": "100% (15/15 pytest)", "frontend": "skipped (per request)"},
+  "test_credentials": "admin@sanatansaathi.com / SanatanAdmin@2026 — login + token retrieval verified",
+  "seed_data_creation": "none",
+  "verified_checks": {
+    "GET /api/mobile/panchang/today (Delhi default)": "200 — sunrise=05:44, sunset=18:52, rahu_kaal=13:56–15:34, is_estimated=false ✓",
+    "GET /api/mobile/panchang/today?lat=19.0760&lon=72.8777 (Mumbai)": "200 — sunrise=06:13, sunset=18:58, rahu_kaal=14:11–15:46, is_estimated=false ✓ (Mumbai vs Delhi sunrise diff = 29 min, >=10 ✓)",
+    "GET /api/mobile/panchang/today?lat=13.0827&lon=80.2707 (Chennai)": "200 — sunrise=05:50, sunset=18:22, rahu_kaal=13:40–15:14, is_estimated=false ✓ (differs from Delhi)",
+    "Rahu Kaal per-location variation": "Delhi=13:56–15:34, Mumbai=14:11–15:46, Chennai=13:40–15:14 — all distinct ✓",
+    "GET /api/mobile/mantra-of-day": "200 — graha=Mars, count=108, mantra non-empty (Tuesday → Mars) ✓",
+    "GET /api/insights/today (auth)": "non-401, status in {200,400,404} ✓",
+    "Astrology regression (kundli/my, dasha/current, dosha/detect, charts/d1-d9, notifications/today, recommendations/mantra, kundli/generate, /)": "all pass ✓"
+  },
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "iter6's critical bug (swe.rise_trans 8-arg call) is fully fixed. Test suite at /app/backend/tests/test_mobile_endpoints.py now contains 4 location-aware sunrise/rahu-kaal regression tests plus 11 regression tests. Use admin@sanatansaathi.com / SanatanAdmin@2026 via /auth/admin/login. Run: pytest backend/tests/test_mobile_endpoints.py -v.",
+  "rca of the issue": "RESOLVED. iter6 root cause: swe.rise_trans was called with 8 positional args; pyswisseph signature is (tjdut, body, rsmi, geopos, atpress=0, attemp=0). Fix in mobile_extras.py:99-105 now uses geopos=(lon,lat,0.0), rise_flag=swe.CALC_RISE|swe.BIT_DISC_CENTER, set_flag=swe.CALC_SET|swe.BIT_DISC_CENTER, and unpacks (rs_ret, rs_tret) properly. Verified end-to-end: Delhi/Mumbai/Chennai now return location-correct sunrise (05:44/06:13/05:50 respectively) with is_estimated=false, matching the expected manual values."
+}

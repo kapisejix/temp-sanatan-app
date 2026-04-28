@@ -95,15 +95,17 @@ def compute_today_panchang(lat: float = 28.6139, lon: float = 77.2090, tz_name: 
         karana = KARANA_HI[(karana_idx - 1) % 7]
 
     # Sunrise / Sunset
+    is_estimated = True
     try:
-        rsmi_flag = swe.CALC_RISE
-        rs = swe.rise_trans(jd - 1, swe.SUN, lon, lat, 0, 0, 0, rsmi_flag)
-        ss_flag = swe.CALC_SET
-        ss = swe.rise_trans(jd - 1, swe.SUN, lon, lat, 0, 0, 0, ss_flag)
-        if rs[0] == 0 and ss[0] == 0:
-            sunrise_jd = rs[1][0]
-            sunset_jd = ss[1][0]
-            # Convert JD back to local
+        # pyswisseph signature: rise_trans(tjdut, body, rsmi, geopos, atpress=0, attemp=0, flags=FLG_SWIEPH)
+        geopos = (lon, lat, 0.0)
+        rise_flag = swe.CALC_RISE | swe.BIT_DISC_CENTER
+        set_flag = swe.CALC_SET | swe.BIT_DISC_CENTER
+        rs_ret, rs_tret = swe.rise_trans(jd - 1.0, swe.SUN, rise_flag, geopos)
+        ss_ret, ss_tret = swe.rise_trans(jd - 1.0, swe.SUN, set_flag, geopos)
+        if rs_ret == 0 and ss_ret == 0:
+            sunrise_jd = rs_tret[0]
+            sunset_jd = ss_tret[0]
             yr, mo, da, frac = swe.revjul(sunrise_jd)
             sunrise_utc = datetime(yr, mo, da, tzinfo=pytz.utc) + timedelta(hours=frac)
             yr2, mo2, da2, frac2 = swe.revjul(sunset_jd)
@@ -114,8 +116,9 @@ def compute_today_panchang(lat: float = 28.6139, lon: float = 77.2090, tz_name: 
             sunset_str = sunset_local.strftime("%H:%M")
             sunrise_h = sunrise_local.hour + sunrise_local.minute / 60.0
             sunset_h = sunset_local.hour + sunset_local.minute / 60.0
+            is_estimated = False
         else:
-            sunrise_str, sunset_str, sunrise_h, sunset_h = "06:00", "18:30", 6.0, 18.5
+            raise RuntimeError(f"rise_trans returned {rs_ret}/{ss_ret}")
     except Exception as e:
         logger.warning(f"Sunrise/sunset calc fallback: {e}")
         sunrise_str, sunset_str, sunrise_h, sunset_h = "06:00", "18:30", 6.0, 18.5
@@ -133,6 +136,7 @@ def compute_today_panchang(lat: float = 28.6139, lon: float = 77.2090, tz_name: 
         "sunset": sunset_str,
         "rahu_kaal": rahu_kaal,
         "lat": lat, "lon": lon,
+        "is_estimated": is_estimated,
     }
 
 
