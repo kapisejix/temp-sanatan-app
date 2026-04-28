@@ -273,6 +273,97 @@ class SanatanSaathiAPITester:
         
         return True  # Don't fail the test suite for this
 
+    def test_vedas_apis(self):
+        """Test Vedas-related APIs"""
+        print("\n" + "="*50)
+        print("TESTING VEDAS APIS")
+        print("="*50)
+        
+        # Test vedas books list - should return 4 veda books
+        success1, books_response = self.run_test(
+            "Vedas Books List",
+            "GET",
+            "vedas/books",
+            200
+        )
+        
+        veda_book_id = None
+        if success1 and isinstance(books_response, list):
+            print(f"   📚 Found {len(books_response)} veda books")
+            if len(books_response) >= 4:
+                print(f"   ✅ Expected 4+ veda books, got {len(books_response)}")
+                # Look for Rig Veda specifically
+                for book in books_response:
+                    if 'rig' in book.get('title_en', '').lower() or 'ऋग्वेद' in book.get('title_hi', ''):
+                        veda_book_id = book.get('_id')
+                        print(f"   📖 Found Rig Veda: {book.get('title_en', 'Unknown')} (ID: {veda_book_id})")
+                        break
+                if not veda_book_id and len(books_response) > 0:
+                    veda_book_id = books_response[0].get('_id')
+                    print(f"   📖 Using first book: {books_response[0].get('title_en', 'Unknown')} (ID: {veda_book_id})")
+            else:
+                print(f"   ⚠️  Expected 4+ veda books, got {len(books_response)}")
+        
+        # Test hierarchy if we have a book ID
+        success2 = True
+        if veda_book_id:
+            success2, hierarchy_response = self.run_test(
+                f"Vedas Hierarchy for book {veda_book_id}",
+                "GET",
+                f"vedas/hierarchy/{veda_book_id}",
+                200
+            )
+            
+            if success2 and isinstance(hierarchy_response, dict):
+                chapters = hierarchy_response.get('chapters', [])
+                print(f"   📑 Found {len(chapters)} chapters/mandalas in book")
+                
+                # Test chapter verses if we have chapters
+                if len(chapters) > 0:
+                    chapter_id = chapters[0].get('id')
+                    if chapter_id:
+                        success3, verses_response = self.run_test(
+                            f"Vedas Chapter Verses for chapter {chapter_id} (Hindi)",
+                            "GET",
+                            f"vedas/chapter-verses/{chapter_id}?lang=hi",
+                            200
+                        )
+                        
+                        if success3 and isinstance(verses_response, dict):
+                            verses = verses_response.get('verses', [])
+                            print(f"   📝 Found {len(verses)} verses in chapter")
+                            if len(verses) > 0:
+                                first_verse = verses[0]
+                                print(f"   📜 First verse has Sanskrit text: {bool(first_verse.get('text_sa'))}")
+                                print(f"   📜 First verse has meaning: {bool(first_verse.get('display_meaning'))}")
+        
+        return success1 and success2
+
+    def test_vedachat_apis(self):
+        """Test VedaChat-related APIs"""
+        print("\n" + "="*50)
+        print("TESTING VEDACHAT APIS")
+        print("="*50)
+        
+        # Test knowledge stats
+        success1, stats_response = self.run_test(
+            "VedaChat Knowledge Stats",
+            "GET",
+            "vedachat/knowledge-stats",
+            200
+        )
+        
+        if success1 and isinstance(stats_response, dict):
+            required_fields = ['total_documents', 'total_verses', 'total_books', 'total_content']
+            missing_fields = [field for field in required_fields if field not in stats_response]
+            if missing_fields:
+                print(f"   ⚠️  Missing fields: {missing_fields}")
+            else:
+                print(f"   ✅ All required knowledge stats fields present")
+                print(f"   📊 Stats: {stats_response.get('total_documents', 0)} docs, {stats_response.get('total_verses', 0)} verses, {stats_response.get('total_books', 0)} books")
+        
+        return success1
+
     def run_all_tests(self):
         """Run all API tests"""
         print("🚀 Starting Sanatan Saathi API Tests")
@@ -291,6 +382,8 @@ class SanatanSaathiAPITester:
             self.test_content_by_language,
             self.test_preview_render,
             self.test_granth_apis,
+            self.test_vedas_apis,
+            self.test_vedachat_apis,
             self.test_import_wizard_api
         ]
         

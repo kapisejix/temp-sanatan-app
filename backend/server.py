@@ -1109,6 +1109,177 @@ async def get_veda_book(book_id: str):
     result["chapters"] = [serialize_doc(c) for c in chapters]
     return result
 
+
+# ===================== VEDAS HIERARCHY (same as Granth) =====================
+
+@api_router.get("/vedas/hierarchy/{book_id}")
+async def get_vedas_hierarchy(book_id: str):
+    """Get Vedas hierarchy: Book → Chapters/Mandalas → Verse counts."""
+    book = await db.veda_books.find_one({"_id": ObjectId(book_id)})
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    chapters = await db.veda_chapters.find({"book_id": book_id}).sort("chapter_num", 1).to_list(500)
+    hierarchy = []
+    for ch in chapters:
+        ch_id = str(ch["_id"])
+        verse_count = await db.veda_verses.count_documents({"chapter_id": ch_id})
+        hierarchy.append({
+            "id": ch_id,
+            "chapter_num": ch.get("chapter_num"),
+            "title_hi": ch.get("title_hi", ch.get("title", {}).get("hi", "")),
+            "title_en": ch.get("title_en", ch.get("title", {}).get("en", "")),
+            "verse_count": verse_count,
+        })
+    return {"book": serialize_doc(book), "chapters": hierarchy, "total_chapters": len(hierarchy)}
+
+
+@api_router.get("/vedas/chapter-verses/{chapter_id}")
+async def get_vedas_chapter_verses(chapter_id: str, lang: str = "hi", skip: int = 0, limit: int = 100):
+    """Get verses for a Vedas chapter with multilingual meanings."""
+    chapter = await db.veda_chapters.find_one({"_id": ObjectId(chapter_id)})
+    if not chapter:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+    verses = await db.veda_verses.find({"chapter_id": chapter_id}).sort("verse_num", 1).skip(skip).limit(limit).to_list(limit)
+    total = await db.veda_verses.count_documents({"chapter_id": chapter_id})
+    result = []
+    for v in verses:
+        doc = serialize_doc(v)
+        meaning_obj = v.get("meaning", v.get("meaning_hi", ""))
+        if isinstance(meaning_obj, dict):
+            doc["display_meaning"] = meaning_obj.get(lang, meaning_obj.get("hi", meaning_obj.get("en", "")))
+        else:
+            doc["display_meaning"] = str(meaning_obj) if meaning_obj else ""
+        result.append(doc)
+    return {"chapter": serialize_doc(chapter), "verses": result, "total": total, "language": lang}
+
+
+@api_router.put("/vedas/verses/{verse_id}")
+async def update_veda_verse(verse_id: str, request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    body = await request.json()
+    body.pop("_id", None)
+    body.pop("id", None)
+    await db.veda_verses.update_one({"_id": ObjectId(verse_id)}, {"$set": body})
+    updated = await db.veda_verses.find_one({"_id": ObjectId(verse_id)})
+    return serialize_doc(updated)
+
+
+@api_router.post("/vedas/upload-parse")
+async def vedas_upload_parse(
+    file: UploadFile = File(...),
+    book_id: str = Form(""),
+    admin: dict = Depends(require_role(["super_admin", "content_admin"]))
+):
+    """Upload PDF/DOCX for a Vedas/Puranas book, parse with Claude, save to DB."""
+    content = await file.read()
+    now = datetime.now(timezone.utc).isoformat()
+    fname = file.filename.lower()
+
+    # Extract text
+    raw_text = ""
+    if fname.endswith(".pdf"):
+        import pdfplumber, io
+        with pdfplumber.open(io.BytesIO(content)) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text()
+                if text:
+                    raw_text += text + "\n\n"
+    elif fname.endswith((".docx", ".doc")):
+        import io
+        from docx import Document
+        doc = Document(io.BytesIO(content))
+        for para in doc.paragraphs:
+            text = para.text
+            if text.strip():
+                is_bold = any(run.bold for run in para.runs if run.bold)
+                style = para.style.name if para.style else ""
+                if "Heading" in style or is_bold:
+                    raw_text += f"\n[HEADING] {text}\n"
+                else:
+                    raw_text += f"{text}\n"
+    else:
+        raise HTTPException(status_code=400, detail="Only PDF and DOCX files supported")
+
+    if not raw_text.strip():
+        raise HTTPException(status_code=400, detail="Could not extract text from file")
+
+    # Parse with Claude
+    from emergentintegrations.llm.chat import LlmChat, UserMessage
+    chat = LlmChat(
+        api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
+        session_id=f"vedas-parse-{uuid.uuid4()}",
+        system_message="""You are an expert in Hindu scriptures. Parse the uploaded text into structured chapter/verse format.
+
+Extract:
+- Chapter/Mandala divisions (identify by headings, numbering, or contextual clues)
+- Individual verses/shlokas (identify by numbering, formatting, or Sanskrit verse patterns)
+- For each verse: original Sanskrit text, transliteration (if present), Hindi meaning, English meaning
+
+CRITICAL: Preserve 100% of text. NEVER truncate. Include ALL verses.
+
+Return ONLY valid JSON:
+{
+  "book_title": "detected book name",
+  "chapters": [{
+    "chapter_num": 1,
+    "title_hi": "chapter title in Hindi",
+    "title_en": "chapter title in English",
+    "verses": [{
+      "verse_num": 1,
+      "text_sa": "Sanskrit/original text with ALL line breaks preserved",
+      "transliteration": "romanized text if available",
+      "meaning_hi": "Hindi meaning",
+      "meaning_en": "English meaning"
+    }]
+  }]
+}"""
+    )
+    chat.with_model("anthropic", "claude-sonnet-4-5-20250929")
+    ai_resp = await chat.send_message(UserMessage(text=f"Parse this scripture text:\n\n{raw_text[:50000]}"))
+
+    import json as json_mod
+    json_str = ai_resp
+    if "```json" in json_str:
+        json_str = json_str.split("```json")[1].split("```")[0]
+    elif "```" in json_str:
+        json_str = json_str.split("```")[1].split("```")[0]
+    parsed = json_mod.loads(json_str.strip())
+
+    # Save to DB
+    chapters_saved = 0
+    verses_saved = 0
+    for ch_data in parsed.get("chapters", []):
+        ch_result = await db.veda_chapters.insert_one({
+            "book_id": book_id,
+            "chapter_num": ch_data.get("chapter_num", chapters_saved + 1),
+            "title_hi": ch_data.get("title_hi", ""),
+            "title_en": ch_data.get("title_en", ""),
+            "title": {"hi": ch_data.get("title_hi", ""), "en": ch_data.get("title_en", "")},
+            "total_verses": len(ch_data.get("verses", [])),
+            "sort_order": ch_data.get("chapter_num", chapters_saved + 1),
+        })
+        ch_id = str(ch_result.inserted_id)
+        for v_data in ch_data.get("verses", []):
+            await db.veda_verses.insert_one({
+                "chapter_id": ch_id,
+                "book_id": book_id,
+                "verse_num": v_data.get("verse_num", verses_saved + 1),
+                "text_sa": v_data.get("text_sa", ""),
+                "transliteration": v_data.get("transliteration", ""),
+                "meaning_hi": v_data.get("meaning_hi", ""),
+                "meaning_en": v_data.get("meaning_en", ""),
+                "meaning": {"hi": v_data.get("meaning_hi", ""), "en": v_data.get("meaning_en", "")},
+                "sort_order": v_data.get("verse_num", verses_saved + 1),
+            })
+            verses_saved += 1
+        chapters_saved += 1
+
+    # Update book stats
+    if book_id:
+        total_ch = await db.veda_chapters.count_documents({"book_id": book_id})
+        await db.veda_books.update_one({"_id": ObjectId(book_id)}, {"$set": {"total_chapters": total_ch, "parsing_status": "completed"}})
+
+    return {"message": f"Parsed and saved {chapters_saved} chapters, {verses_saved} verses", "stats": {"chapters": chapters_saved, "verses": verses_saved}}
+
 # ===================== PANCHANG =====================
 
 @api_router.get("/admin/panchang")
@@ -1154,7 +1325,6 @@ async def vedachat_message(request: Request):
         messages = []
         conv = None
 
-    # Add user message
     user_msg = {
         "role": "user",
         "content": message_text,
@@ -1162,36 +1332,173 @@ async def vedachat_message(request: Request):
     }
     messages.append(user_msg)
 
-    # Call Claude via emergentintegrations
+    # ---- BUILD SCRIPTURE CONTEXT FROM DATABASE ----
+    scripture_context = ""
+    try:
+        # Search across all content collections for relevant verses
+        search_terms = message_text.lower().split()
+        search_regex = "|".join([t for t in search_terms if len(t) > 2])
+
+        # Search in granth verses
+        granth_results = []
+        if search_regex:
+            granth_verses = await db.granth_verses.find({
+                "$or": [
+                    {"sanskrit": {"$regex": search_regex, "$options": "i"}},
+                    {"transliteration": {"$regex": search_regex, "$options": "i"}},
+                    {"meaning.hi": {"$regex": search_regex, "$options": "i"}},
+                    {"meaning.en": {"$regex": search_regex, "$options": "i"}},
+                ]
+            }).limit(10).to_list(10)
+
+            for v in granth_verses:
+                chapter = await db.granth_chapters.find_one({"_id": ObjectId(v.get("chapter_id", ""))}) if v.get("chapter_id") else None
+                book = await db.granth_books.find_one({"_id": ObjectId(v.get("book_id", ""))}) if v.get("book_id") else None
+                book_name = book.get("title_en", book.get("title", {}).get("en", "Unknown")) if book else "Unknown"
+                ch_num = chapter.get("chapter_num", "?") if chapter else "?"
+                ch_name = (chapter.get("title_en", chapter.get("title", {}).get("en", "")) if chapter else "")
+                meaning_obj = v.get("meaning", {})
+                meaning_hi = meaning_obj.get("hi", "") if isinstance(meaning_obj, dict) else str(meaning_obj)
+                meaning_en = meaning_obj.get("en", "") if isinstance(meaning_obj, dict) else ""
+                granth_results.append({
+                    "book": book_name, "chapter": ch_num, "chapter_name": ch_name,
+                    "verse": v.get("verse_num"), "sanskrit": v.get("sanskrit", ""),
+                    "transliteration": v.get("transliteration", ""),
+                    "meaning_hi": meaning_hi, "meaning_en": meaning_en,
+                })
+
+        # Search in veda verses
+        veda_results = []
+        if search_regex:
+            veda_verses = await db.veda_verses.find({
+                "$or": [
+                    {"text_sa": {"$regex": search_regex, "$options": "i"}},
+                    {"transliteration": {"$regex": search_regex, "$options": "i"}},
+                    {"meaning_hi": {"$regex": search_regex, "$options": "i"}},
+                    {"meaning_en": {"$regex": search_regex, "$options": "i"}},
+                ]
+            }).limit(10).to_list(10)
+
+            for v in veda_verses:
+                chapter = await db.veda_chapters.find_one({"_id": ObjectId(v.get("chapter_id", ""))}) if v.get("chapter_id") else None
+                book = await db.veda_books.find_one({"_id": ObjectId(v.get("book_id", ""))}) if v.get("book_id") else None
+                book_name = (book.get("title_en", "") if book else "Unknown")
+                ch_num = chapter.get("chapter_num", "?") if chapter else "?"
+                meaning_obj = v.get("meaning", {})
+                meaning_hi = meaning_obj.get("hi", v.get("meaning_hi", "")) if isinstance(meaning_obj, dict) else v.get("meaning_hi", "")
+                meaning_en = meaning_obj.get("en", v.get("meaning_en", "")) if isinstance(meaning_obj, dict) else v.get("meaning_en", "")
+                veda_results.append({
+                    "book": book_name, "chapter": ch_num, "verse": v.get("verse_num"),
+                    "sanskrit": v.get("text_sa", ""), "transliteration": v.get("transliteration", ""),
+                    "meaning_hi": meaning_hi, "meaning_en": meaning_en,
+                })
+
+        # Search in content verses (Chalisa, Mantras, etc.)
+        content_results = []
+        if search_regex:
+            content_verses = await db.content_verses.find({
+                "$or": [
+                    {"sanskrit_text": {"$regex": search_regex, "$options": "i"}},
+                    {"transliteration": {"$regex": search_regex, "$options": "i"}},
+                ]
+            }).limit(10).to_list(10)
+
+            for v in content_verses:
+                item = await db.content_items.find_one({"_id": ObjectId(v.get("item_id", ""))}) if v.get("item_id") else None
+                item_title = item.get("title_hi", item.get("title_en", "Unknown")) if item else "Unknown"
+                meaning_doc = await db.verse_meanings.find_one({"verse_id": str(v["_id"]), "language": "hi"})
+                content_results.append({
+                    "book": item_title, "verse": v.get("verse_num"),
+                    "sanskrit": v.get("sanskrit_text", ""), "transliteration": v.get("transliteration", ""),
+                    "meaning_hi": meaning_doc.get("meaning", "") if meaning_doc else "",
+                })
+
+        # Search in knowledge base
+        kb_results = []
+        if search_regex:
+            kb_entries = await db.vedachat_knowledge.find({
+                "$or": [
+                    {"text": {"$regex": search_regex, "$options": "i"}},
+                    {"title": {"$regex": search_regex, "$options": "i"}},
+                ]
+            }).limit(5).to_list(5)
+            for kb in kb_entries:
+                kb_results.append({"source": kb.get("source_file", ""), "text": kb.get("text", "")[:500]})
+
+        # Build context string
+        all_refs = granth_results + veda_results + content_results
+        if all_refs:
+            scripture_context = "\n\n--- RELEVANT SCRIPTURES FROM DATABASE ---\n"
+            for ref in all_refs[:15]:
+                scripture_context += f"\n[{ref.get('book', 'Unknown')} | Chapter {ref.get('chapter', '?')} | Verse {ref.get('verse', '?')}]\n"
+                if ref.get('sanskrit'):
+                    scripture_context += f"Sanskrit: {ref['sanskrit']}\n"
+                if ref.get('transliteration'):
+                    scripture_context += f"Transliteration: {ref['transliteration']}\n"
+                if ref.get('meaning_hi'):
+                    scripture_context += f"Hindi Meaning: {ref['meaning_hi']}\n"
+                if ref.get('meaning_en'):
+                    scripture_context += f"English Meaning: {ref['meaning_en']}\n"
+
+        if kb_results:
+            scripture_context += "\n\n--- KNOWLEDGE BASE ---\n"
+            for kb in kb_results:
+                scripture_context += f"\n[Source: {kb['source']}]\n{kb['text']}\n"
+
+    except Exception as search_err:
+        logger.warning(f"VedaChat DB search error: {search_err}")
+        scripture_context = ""
+
+    # Call Claude with DB context
     try:
         from emergentintegrations.llm.chat import LlmChat, UserMessage
 
         session_id = conversation_id or str(uuid.uuid4())
+        system_msg = f"""You are VedaChat, a knowledgeable spiritual guide for Sanatan Dharma. You answer questions about Hindu scriptures, philosophy, rituals, and spiritual practices.
+
+IMPORTANT RULES:
+1. Always cite specific scripture references: Book Name, Chapter Number, Verse Number
+2. When you reference a shloka, include the Sanskrit text AND its meaning
+3. Use the RELEVANT SCRIPTURES FROM DATABASE section below as your primary source
+4. If the database has matching verses, quote them exactly — do not paraphrase the Sanskrit
+5. Format references clearly: [Book Name | Chapter X | Verse Y]
+6. Respond in the language the user asks in (Hindi or English)
+7. For each answer, try to include at least one direct shloka reference
+8. Be helpful for both beginners and advanced practitioners
+
+{scripture_context}"""
+
         chat = LlmChat(
             api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
             session_id=f"vedachat-{session_id}",
-            system_message="""You are VedaChat, a knowledgeable spiritual guide for Sanatan Dharma. You answer questions about Hindu scriptures, philosophy, rituals, and spiritual practices.
-
-Guidelines:
-- Always cite specific scripture references when possible (e.g., Bhagavad Gita Chapter 2, Verse 47)
-- Respond with respect and depth befitting spiritual texts
-- Provide answers in the language the user asks in (Hindi or English)
-- Include Sanskrit shlokas when relevant with their translations
-- Be helpful for both beginners and advanced practitioners
-- Cover topics from Vedas, Upanishads, Bhagavad Gita, Ramayana, Mahabharata, Puranas"""
+            system_message=system_msg
         )
         chat.with_model("anthropic", "claude-sonnet-4-5-20250929")
 
-        # Load conversation history into chat
-        for msg in messages[:-1]:
+        # Load last few messages for context (not full history to save tokens)
+        recent_msgs = messages[-6:-1] if len(messages) > 6 else messages[:-1]
+        for msg in recent_msgs:
             if msg["role"] == "user":
                 await chat.send_message(UserMessage(text=msg["content"]))
 
         ai_response = await chat.send_message(UserMessage(text=message_text))
 
+        # Extract references from the AI response and DB results
+        extracted_refs = []
+        for ref in (granth_results + veda_results + content_results)[:5]:
+            extracted_refs.append({
+                "book": ref.get("book", "Unknown"),
+                "chapter": ref.get("chapter"),
+                "chapter_name": ref.get("chapter_name", ""),
+                "verse": ref.get("verse"),
+                "sanskrit": ref.get("sanskrit", ""),
+                "meaning": ref.get("meaning_hi") or ref.get("meaning_en", ""),
+            })
+
         assistant_msg = {
             "role": "assistant",
             "content": ai_response,
+            "references": extracted_refs,
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         messages.append(assistant_msg)
@@ -1201,6 +1508,7 @@ Guidelines:
         assistant_msg = {
             "role": "assistant",
             "content": "I apologize, but I'm unable to process your question right now. Please try again later.",
+            "references": [],
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         messages.append(assistant_msg)
@@ -1247,6 +1555,167 @@ async def delete_conversation(conv_id: str, request: Request):
     await get_current_admin(request)
     await db.vedachat_conversations.delete_one({"_id": ObjectId(conv_id)})
     return {"message": "Conversation deleted"}
+
+
+@api_router.post("/vedachat/upload-knowledge")
+async def vedachat_upload_knowledge(
+    file: UploadFile = File(...),
+    admin: dict = Depends(require_role(["super_admin", "content_admin"]))
+):
+    """Upload PDF/DOCX to VedaChat knowledge base — parses content and saves to DB for accurate answers."""
+    content_bytes = await file.read()
+    fname = file.filename.lower()
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Extract text
+    raw_text = ""
+    if fname.endswith(".pdf"):
+        import pdfplumber, io
+        with pdfplumber.open(io.BytesIO(content_bytes)) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text()
+                if text:
+                    raw_text += text + "\n\n"
+    elif fname.endswith((".docx", ".doc")):
+        import io
+        from docx import Document
+        doc = Document(io.BytesIO(content_bytes))
+        for para in doc.paragraphs:
+            text = para.text
+            if text.strip():
+                style = para.style.name if para.style else ""
+                is_bold = any(run.bold for run in para.runs if run.bold)
+                if "Heading" in style or is_bold:
+                    raw_text += f"\n[HEADING] {text}\n"
+                else:
+                    raw_text += f"{text}\n"
+    else:
+        raise HTTPException(status_code=400, detail="Only PDF and DOCX files supported")
+
+    if not raw_text.strip():
+        raise HTTPException(status_code=400, detail="Could not extract text from file")
+
+    # Parse with Claude to extract structured knowledge
+    from emergentintegrations.llm.chat import LlmChat, UserMessage
+    chat = LlmChat(
+        api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
+        session_id=f"knowledge-{uuid.uuid4()}",
+        system_message="""You are a Hindu scripture parser. Extract structured knowledge from this text.
+Extract: Book/Source name, Chapters, Shlokas/Verses with:
+- Original Sanskrit/Hindi text
+- Transliteration
+- Hindi meaning
+- English meaning
+- Chapter number, Verse number
+
+Return ONLY valid JSON:
+{
+  "source": "detected book/source name",
+  "chapters": [{
+    "chapter_num": 1,
+    "title": "chapter title",
+    "verses": [{
+      "verse_num": 1,
+      "sanskrit": "verse text",
+      "transliteration": "romanized text",
+      "meaning_hi": "Hindi meaning",
+      "meaning_en": "English meaning"
+    }]
+  }]
+}
+
+CRITICAL: Preserve ALL text. No truncation. No "..." placeholders."""
+    )
+    chat.with_model("anthropic", "claude-sonnet-4-5-20250929")
+    ai_resp = await chat.send_message(UserMessage(text=f"Parse:\n\n{raw_text[:50000]}"))
+
+    import json as json_mod
+    json_str = ai_resp
+    if "```json" in json_str:
+        json_str = json_str.split("```json")[1].split("```")[0]
+    elif "```" in json_str:
+        json_str = json_str.split("```")[1].split("```")[0]
+
+    try:
+        parsed = json_mod.loads(json_str.strip())
+    except json_mod.JSONDecodeError:
+        # Save raw text as knowledge even if parsing fails
+        await db.vedachat_knowledge.insert_one({
+            "source_file": file.filename,
+            "title": file.filename,
+            "text": raw_text[:50000],
+            "type": "raw",
+            "created_at": now,
+            "created_by": admin["_id"],
+        })
+        return {"message": f"Saved raw text from {file.filename} to knowledge base (AI parsing partial)", "stats": {"chapters": 0, "verses": 0}}
+
+    # Save structured data
+    source_name = parsed.get("source", file.filename)
+    chapters_saved = 0
+    verses_saved = 0
+
+    for ch_data in parsed.get("chapters", []):
+        for v_data in ch_data.get("verses", []):
+            await db.vedachat_knowledge.insert_one({
+                "source_file": file.filename,
+                "source_book": source_name,
+                "title": f"{source_name} | Ch. {ch_data.get('chapter_num', '?')} | V. {v_data.get('verse_num', '?')}",
+                "chapter_num": ch_data.get("chapter_num"),
+                "chapter_title": ch_data.get("title", ""),
+                "verse_num": v_data.get("verse_num"),
+                "text": v_data.get("sanskrit", ""),
+                "transliteration": v_data.get("transliteration", ""),
+                "meaning_hi": v_data.get("meaning_hi", ""),
+                "meaning_en": v_data.get("meaning_en", ""),
+                "type": "verse",
+                "created_at": now,
+                "created_by": admin["_id"],
+            })
+            verses_saved += 1
+        chapters_saved += 1
+
+    # Log upload
+    await db.upload_logs.insert_one({
+        "admin_id": admin["_id"],
+        "file_name": file.filename,
+        "file_type": "knowledge_base",
+        "status": "published",
+        "parsed_items_count": verses_saved,
+        "created_at": now,
+    })
+
+    return {
+        "message": f"Parsed '{source_name}': {chapters_saved} chapters, {verses_saved} verses saved to knowledge base",
+        "stats": {"chapters": chapters_saved, "verses": verses_saved, "source": source_name}
+    }
+
+
+@api_router.get("/vedachat/knowledge-stats")
+async def vedachat_knowledge_stats(request: Request):
+    """Get statistics about the VedaChat knowledge base."""
+    await get_current_admin(request)
+    kb_count = await db.vedachat_knowledge.count_documents({})
+    granth_verses = await db.granth_verses.count_documents({})
+    veda_verses = await db.veda_verses.count_documents({})
+    content_verses = await db.content_verses.count_documents({})
+    granth_books = await db.granth_books.count_documents({})
+    veda_books = await db.veda_books.count_documents({})
+    content_items = await db.content_items.count_documents({})
+
+    return {
+        "total_documents": kb_count,
+        "total_verses": granth_verses + veda_verses + content_verses,
+        "total_books": granth_books + veda_books,
+        "total_content": content_items,
+        "breakdown": {
+            "knowledge_base": kb_count,
+            "granth_verses": granth_verses,
+            "veda_verses": veda_verses,
+            "content_verses": content_verses,
+        }
+    }
+
 
 # ===================== HOME / DISCOVERY =====================
 
