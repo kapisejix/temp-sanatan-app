@@ -1,89 +1,71 @@
 # Sanatan Saathi — PRD
 
 ## Vision
-Multilingual spiritual platform with React Admin Panel, FastAPI Backend, and Expo Mobile App.
-Features: Multilingual content (Aartis/Chalisas/Granths/Vedas), Import Wizard, Live Preview, VedaChat AI, **Graha-based Mantra Recommendation System**, and **AI + Rule-Based Astrology Intelligence System** powered by Swiss Ephemeris (deterministic — no AI guesswork in computation).
+Multilingual spiritual platform: React Admin Panel + FastAPI Backend + Expo Mobile App with AI + Rule-Based Astrology Intelligence.
 
-## What's Been Implemented
+## Sessions
 
-### Session 1: Foundation
-- Existing codebase imported from user GitHub
-- Import Wizard, Live Preview, Multilingual Tabs, Enhanced Granth Manager
+### Session 1: Foundation (existing GitHub import + Multilingual + Import Wizard + Granth Manager)
+### Session 2: Vedas & VedaChat AI (hierarchical scripture + Claude knowledge-grounded chat)
+### Session 3: Smart Search + Expo skeleton
+### Session 4: Graha-based Mantra + Multilingual TTS (Google/OpenAI/ElevenLabs switchable)
+### Session 5: AI + Rule-Based Astrology Intelligence
+- Vimshottari Dasha Engine (MD+AD, 5-domain impact)
+- Dosha Detection (Mangal/Kaal Sarp/Sade Sati real Saturn transit)
+- D9 Navamsa Engine
+- AI Hybrid Interpreter (Claude rule-bound, 2-4 line, no hallucination)
+- North Indian Kundli SVG (D1+D9)
+- Dashboard "वर्तमान दशा प्रभाव"
 
-### Session 2: Vedas & VedaChat
-- Vedas & Puranas Manager (hierarchical Book → Chapter → Verse)
-- VedaChat AI with knowledge upload + DB-context answers + Shloka references
-
-### Session 3: Smart Search + Expo Guide
-- Smart Search across all collections
-- Expo App API config + setup guide
-
-### Session 4: Graha-based Mantra System + Multilingual TTS (Feb 2026)
-- Swiss Ephemeris Kundli Engine (`kundli_engine.py`) — accurate planetary positions
-- Graha Scoring Engine — 0-100 + priorities HIGH/MEDIUM/LOW
-- Mantra Recommendation — Top 1-2 afflicted grahas → Devta + Mantra + Count + Day + Color + Remedy
-- `GrahaKundliPage` (हि/EN toggle), Dashboard `आज का उपाय` card
-- Switchable TTS (Google Cloud / OpenAI / ElevenLabs) via Integration Hub
-- 12-language voice mapping, MongoDB cache
-
-### Session 5: AI + Rule-Based Astrology Intelligence (Feb 2026, current)
-- **Vimshottari Dasha Engine** (`dasha_engine.py`) — 120-year cycle from Moon nakshatra; Mahadasha + Antardasha + interpret_current_dasha (5-domain impact: career, marriage, health, finance, mind)
-- **Dosha Detection Engine** (`dosha_engine.py`) — Mangal Dosha (Lagna+Moon+Venus refs), Kaal Sarp Dosha (planets one side of Rahu-Ketu axis), Sade Sati (current Saturn transit via real-time swisseph), Shani Dhaiya
-- **D9 Navamsa Engine** (`d9_engine.py`) — deterministic offsets (movable=0/fixed=8/dual=4)
-- **AI Hybrid Layer** (`ai_interpreter.py`) — Claude via Emergent LLM Key, strict prompt: ONLY explains rule output in 2-4 line Hindi/English, no hallucination, response cached in `ai_cache` field
-- **North Indian Kundli SVG** (`NorthIndianChart.js`) — D1 + D9 with planet abbreviations, retrograde marker, Hindi/English labels
-- **Dashboard sections**: "वर्तमान दशा प्रभाव" (Mahadasha + Antardasha + 3 themes + AI व्याख्या + 5 domain pills)
-- **Endpoints**: `/api/dasha/current`, `/api/dasha/interpret`, `/api/dosha/detect`, `/api/dosha/interpret`, `/api/charts/d1-d9`, `/api/insights/today`
-- Extended `/api/kundli/generate` to compute D9 + Dasha + Doshas in one call
-- Pytest suite expanded: 13/13 passing in iteration_4
+### Session 6: Voice + Mobile App (Feb 2026 — current)
+- **VedaChat Voice (Web)**:
+  - `useSpeechRecognition` hook — browser SpeechRecognition Web API (Chrome/Edge), 9-language picker
+  - Auto-detect Devanagari for TTS language routing
+  - `SpeakerButton` plays AI answers via `/api/tts/synthesize`
+  - "उत्तर सुनाएँ (auto-speak)" toggle for hands-free experience
+- **Mobile App** (`/app/expo-app/` — Expo, mock data first):
+  - 5 bottom tabs: Home, Bhakti, Kundli, Panchang, Profile
+  - Floating AI Chat button (bottom-right, all screens)
+  - HomeScreen: आज का उपाय (with Play + Why?), वर्तमान दशा प्रभाव, आज का पंचांग, Quick Actions, Trending Bhakti
+  - BhaktiScreen: search, deity grid (6 deities), daily morning/evening, types grid (6 types)
+  - KundliScreen: 4 top tabs (Overview/Charts/Analysis/Remedies) — score bars, dosha summary, D1/D9 placeholder, predictions, audio remedy
+  - PanchangScreen: 4 top tabs (Today/Monthly/Festivals/Muhurat)
+  - ProfileScreen: profile + settings + about
+  - AIChatScreen: modal with suggested prompts, mock conversational AI
+  - Mock data via `src/data/mockData.js` (TODAY_UPAYA, CURRENT_DASHA, TODAY_PANCHANG, TRENDING_BHAKTI, DEITIES, BHAKTI_TYPES, KUNDLI_OVERVIEW, MONTHLY_PANCHANG, FESTIVALS, MUHURATS)
+  - Audio playback via Expo AV
+  - Setup README with QR / Expo Go instructions
 
 ## Architecture
 - Backend: FastAPI + MongoDB (this platform)
 - Admin Panel: React.js (this platform)
-- Mobile App: Expo/React Native (user's local VS Code)
-- AI: Claude via Emergent LLM Key
-  - VedaChat (free-form Q&A)
-  - DOCX parsing
-  - **Astrology Hybrid Interpreter** (rule-bound, 2-4 line, no hallucination)
-- Astrology: Swiss Ephemeris (`pyswisseph`) — deterministic
+- Mobile App: Expo/React Native (user runs locally, scans Expo Go QR)
+- AI: Claude via Emergent LLM Key (VedaChat, DOCX parse, astrology rule-bound interpreter)
+- Astrology: Swiss Ephemeris (`pyswisseph`) — deterministic, no LLM
 - TTS: Switchable (Google / OpenAI / ElevenLabs)
-
-## DB Collections
-- `kundli_data` — Full Kundli (planets, scores, d9_chart, dasha_data, current_dasha, dasha_interpretation, doshas, ai_cache, top_recommendations)
-- `graha_scores` — Per-graha scores (linked by kundli_id)
-- `daily_recommendations` — Top mantras for date+user
-- `mantras` — Graha → Devta → Mantra mappings
-- `notifications` — Daily notification log
-- `tts_cache` — Base64 audio cache by hash
-- `integration_settings` — TTS provider + API keys
-
-## API Endpoints (Astrology Suite)
-- `POST /api/kundli/generate` — Full kundli + d9 + dasha + doshas
-- `GET /api/kundli/my` — Saved kundli for current admin
-- `GET /api/dasha/current` — MD/AD + rule interpretation
-- `POST /api/dasha/interpret` — AI Hindi/English (cached)
-- `GET /api/dosha/detect` — Mangal + Kaal Sarp + Sade Sati
-- `POST /api/dosha/interpret` — AI per-dosha (cached)
-- `GET /api/charts/d1-d9` — D1 + D9 SVG-ready data
-- `GET /api/insights/today` — Combined daily insights
-- `GET /api/notifications/today` — Day-based + personalised notifications
-- `POST /api/tts/synthesize` — Switchable provider audio
-- `GET /api/recommendations/mantra` — Top 1-2 mantras
-- `GET /api/mantras/all` — All 9 graha-mantra mappings
+- Voice Input: Browser Web Speech API (free, no SDK)
 
 ## Backlog
 ### P1
-- [ ] User-level Kundli (currently per-admin) — needed for mobile app
-- [ ] APScheduler + mobile push (OneSignal/Expo) for daily reminders
-- [ ] Dasha-change & Sade-Sati-start event notifications
-- [ ] Google Cloud TTS service account JSON (user must provide)
-- [ ] Pratyantardasha (3rd-level dasha)
+- [ ] User-level Kundli (currently per-admin) — required for mobile app real users
+- [ ] APScheduler + push notifications (Dasha change, Sade Sati start, daily reminders)
+- [ ] Google Cloud TTS service account JSON (user must provide via Integration Hub)
+- [ ] Connect mobile app screens to live backend (replace mockData with axios)
 
 ### P2
+- [ ] Pratyantardasha (3rd-level dasha)
+- [ ] D7/D10 charts; Yoga detection (Raj/Dhana/Gajakesari)
 - [ ] Refactor `server.py` (~5050 lines) → `routes/` modules
-- [ ] Charts: D7 (Saptamamsa for children), D10 (Dasamsa for career)
-- [ ] Yoga detection (Raj Yoga, Dhana Yoga, Gajakesari Yoga)
-- [ ] Transit-based daily prediction (current planet positions vs natal)
-- [ ] Media Studio (image/video gen)
+- [ ] Mobile app: deep-link integration, biometric auth
+- [ ] Expo build configs (EAS) for Play Store + App Store
 - [ ] Server-side bulk write optimisation
-- [ ] Ownership validation in /graha/score
+
+## Key API Endpoints
+- `POST /api/kundli/generate`, `GET /api/kundli/my`
+- `GET /api/dasha/current`, `POST /api/dasha/interpret`
+- `GET /api/dosha/detect`, `POST /api/dosha/interpret`
+- `GET /api/charts/d1-d9`
+- `GET /api/insights/today`
+- `GET /api/notifications/today`
+- `POST /api/tts/synthesize`, `GET /api/tts/providers`
+- `POST /api/vedachat/message`
