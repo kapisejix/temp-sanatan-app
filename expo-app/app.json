@@ -1,0 +1,24 @@
+{
+  "expo": {
+    "name": "Sanatan Saathi",
+    "slug": "sanatan-saathi",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "backgroundColor": "#E95A34",
+      "resizeMode": "contain"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.sanatansaathi.app"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#E95A34"
+      },
+      "package": "com.sanatansaathi.app"
+    }
+  }
+}

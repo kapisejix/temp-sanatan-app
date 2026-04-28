@@ -1745,12 +1745,123 @@ async def home_categories():
     ]
 
 @api_router.get("/search")
-async def search_content(q: str = ""):
+async def smart_search(q: str = "", lang: str = "hi", limit: int = 30):
+    """Smart Search: Search across ALL scripture collections — returns Shloka + Book + Chapter + Verse + Meaning."""
     if not q or len(q) < 2:
-        return []
+        return {"results": [], "total": 0, "query": q}
+
     regex = {"$regex": q, "$options": "i"}
-    items = await db.content_items.find({"$or": [{"title_hi": regex}, {"title_en": regex}, {"deity": regex}]}).limit(20).to_list(20)
-    return [serialize_doc(i) for i in items]
+    results = []
+
+    # 1. Search content items (Chalisa, Mantras, etc.)
+    items = await db.content_items.find({"$or": [
+        {"title_hi": regex}, {"title_en": regex}, {"title_sa": regex},
+        {"deity": regex}, {"deity_hi": regex}, {"tags": regex}
+    ]}).limit(5).to_list(5)
+    for item in items:
+        results.append({
+            "type": "content_item",
+            "source": item.get("category", ""),
+            "title": item.get("title_hi", item.get("title_en", "")),
+            "title_en": item.get("title_en", ""),
+            "id": str(item["_id"]),
+            "deity": item.get("deity", ""),
+            "category": item.get("category", ""),
+        })
+
+    # 2. Search content verses (individual shlokas from Chalisa etc.)
+    content_verses = await db.content_verses.find({"$or": [
+        {"sanskrit_text": regex}, {"transliteration": regex}
+    ]}).limit(8).to_list(8)
+    for v in content_verses:
+        item = await db.content_items.find_one({"_id": ObjectId(v.get("item_id", ""))}) if v.get("item_id") else None
+        item_title = (item.get("title_hi", item.get("title_en", "")) if item else "Unknown")
+        meaning_doc = await db.verse_meanings.find_one({"verse_id": str(v["_id"]), "language": lang})
+        results.append({
+            "type": "verse",
+            "source": "bhakti",
+            "book": item_title,
+            "verse_num": v.get("verse_num"),
+            "sanskrit": v.get("sanskrit_text", ""),
+            "transliteration": v.get("transliteration", ""),
+            "meaning": meaning_doc.get("meaning", "") if meaning_doc else "",
+            "id": str(v["_id"]),
+            "item_id": v.get("item_id", ""),
+        })
+
+    # 3. Search granth verses (Gita, Ramayana, etc.)
+    granth_verses = await db.granth_verses.find({"$or": [
+        {"sanskrit": regex}, {"transliteration": regex},
+        {"meaning.hi": regex}, {"meaning.en": regex},
+    ]}).limit(8).to_list(8)
+    for v in granth_verses:
+        chapter = await db.granth_chapters.find_one({"_id": ObjectId(v.get("chapter_id", ""))}) if v.get("chapter_id") else None
+        book = await db.granth_books.find_one({"_id": ObjectId(v.get("book_id", ""))}) if v.get("book_id") else None
+        book_name = (book.get("title_en", book.get("title", {}).get("en", "")) if book else "Unknown")
+        book_name_hi = (book.get("title_hi", book.get("title", {}).get("hi", "")) if book else "")
+        ch_num = chapter.get("chapter_num", "?") if chapter else "?"
+        ch_name = (chapter.get("title_en", chapter.get("title", {}).get("en", "")) if chapter else "")
+        meaning_obj = v.get("meaning", {})
+        meaning = meaning_obj.get(lang, meaning_obj.get("hi", "")) if isinstance(meaning_obj, dict) else str(meaning_obj)
+        results.append({
+            "type": "verse",
+            "source": "granth",
+            "book": book_name,
+            "book_hi": book_name_hi,
+            "chapter": ch_num,
+            "chapter_name": ch_name,
+            "verse_num": v.get("verse_num"),
+            "sanskrit": v.get("sanskrit", ""),
+            "transliteration": v.get("transliteration", ""),
+            "meaning": meaning,
+            "id": str(v["_id"]),
+        })
+
+    # 4. Search veda verses
+    veda_verses = await db.veda_verses.find({"$or": [
+        {"text_sa": regex}, {"transliteration": regex},
+        {"meaning_hi": regex}, {"meaning_en": regex},
+    ]}).limit(8).to_list(8)
+    for v in veda_verses:
+        chapter = await db.veda_chapters.find_one({"_id": ObjectId(v.get("chapter_id", ""))}) if v.get("chapter_id") else None
+        book = await db.veda_books.find_one({"_id": ObjectId(v.get("book_id", ""))}) if v.get("book_id") else None
+        book_name = (book.get("title_en", "") if book else "Unknown")
+        ch_num = chapter.get("chapter_num", "?") if chapter else "?"
+        ch_name = (chapter.get("title_en", chapter.get("title", {}).get("en", "")) if chapter else "")
+        meaning_obj = v.get("meaning", {})
+        meaning = meaning_obj.get(lang, v.get(f"meaning_{lang}", v.get("meaning_hi", ""))) if isinstance(meaning_obj, dict) else v.get("meaning_hi", "")
+        results.append({
+            "type": "verse",
+            "source": "vedas",
+            "book": book_name,
+            "chapter": ch_num,
+            "chapter_name": ch_name,
+            "verse_num": v.get("verse_num"),
+            "sanskrit": v.get("text_sa", ""),
+            "transliteration": v.get("transliteration", ""),
+            "meaning": meaning,
+            "id": str(v["_id"]),
+        })
+
+    # 5. Search knowledge base
+    kb_results = await db.vedachat_knowledge.find({"$or": [
+        {"text": regex}, {"meaning_hi": regex}, {"meaning_en": regex},
+        {"source_book": regex}, {"transliteration": regex},
+    ]}).limit(5).to_list(5)
+    for kb in kb_results:
+        results.append({
+            "type": "verse",
+            "source": "knowledge_base",
+            "book": kb.get("source_book", kb.get("source_file", "")),
+            "chapter": kb.get("chapter_num"),
+            "verse_num": kb.get("verse_num"),
+            "sanskrit": kb.get("text", ""),
+            "transliteration": kb.get("transliteration", ""),
+            "meaning": kb.get(f"meaning_{lang}", kb.get("meaning_hi", kb.get("meaning_en", ""))),
+            "id": str(kb["_id"]),
+        })
+
+    return {"results": results[:limit], "total": len(results), "query": q, "language": lang}
 
 # ===================== APP SETTINGS =====================
 

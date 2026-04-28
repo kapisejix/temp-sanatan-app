@@ -29,6 +29,7 @@ import PublicHomePage from "./pages/PublicHomePage";
 import { BlogListPage, BlogDetailPage, CmsPage } from "./pages/PublicPages";
 import BirthChartPage from "./pages/BirthChartPage";
 import ImportWizardPage from "./pages/ImportWizardPage";
+import SmartSearchPage from "./pages/SmartSearchPage";
 import { Loader2 } from "lucide-react";
 // Bhakti Category Managers
 import AartiManagerPageNew from "./pages/bhakti/AartiManagerPage";
@@ -85,6 +86,7 @@ function AppRoutes() {
         <Route path="dashboard" element={<DashboardPage />} />
         <Route path="content-upload" element={<ContentUploadPage />} />
         <Route path="import-wizard" element={<ImportWizardPage />} />
+        <Route path="search" element={<SmartSearchPage />} />
         <Route path="content-manager" element={<ContentManagerPage />} />
         <Route path="verse-manager" element={<VerseManagerPage />} />
         <Route path="daily-scheduler" element={<DailySchedulerPage />} />
