@@ -4,6 +4,7 @@ import { COLORS } from '../../config/api';
 import { KUNDLI_OVERVIEW, KUNDLI_ANALYSIS, TODAY_UPAYA } from '../../data/mockData';
 import api from '../../api/client';
 import useApiData from '../../hooks/useApiData';
+import SafeScreen from '../../components/SafeScreen';
 
 const TABS = ['Overview', 'Charts', 'Analysis', 'Remedies'];
 const TAB_LABELS = { Overview: 'सारांश', Charts: 'चार्ट', Analysis: 'विश्लेषण', Remedies: 'उपाय' };
@@ -164,7 +165,7 @@ export default function KundliScreen() {
   const [active, setActive] = useState('Overview');
 
   return (
-    <View style={styles.root}>
+    <SafeScreen>
       <View style={styles.tabBar}>
         {TABS.map(t => (
           <TouchableOpacity
@@ -184,7 +185,7 @@ export default function KundliScreen() {
         {active === 'Analysis' && <AnalysisTab />}
         {active === 'Remedies' && <RemediesTab />}
       </ScrollView>
-    </View>
+    </SafeScreen>
   );
 }
 

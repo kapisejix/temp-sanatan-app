@@ -1,72 +1,105 @@
 import React, { useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, TextInput, StyleSheet } from 'react-native';
 import { COLORS } from '../../config/api';
-import { DEITIES, BHAKTI_TYPES, DAILY_BHAKTI } from '../../data/mockData';
+import { DEITIES, DAILY_BHAKTI } from '../../data/mockData';
+import SafeScreen from '../../components/SafeScreen';
 
 export default function BhaktiScreen({ navigation }) {
   const [query, setQuery] = useState('');
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.content}>
-      <View style={styles.header}>
-        <Text style={styles.title}>भक्ति</Text>
-        <Text style={styles.subtitle}>आरती, चालीसा, मंत्र, स्तोत्र</Text>
-      </View>
+    <SafeScreen>
+      <ScrollView style={styles.root} contentContainerStyle={styles.content}>
+        <View style={styles.header}>
+          <Text style={styles.title}>भक्ति</Text>
+          <Text style={styles.subtitle}>देवता · दैनिक · ज्ञान</Text>
+        </View>
 
-      <View style={styles.searchBox}>
-        <Text style={styles.searchIcon}>🔍</Text>
-        <TextInput
-          value={query}
-          onChangeText={setQuery}
-          placeholder="खोजें — हनुमान चालीसा, गायत्री मंत्र…"
-          placeholderTextColor={COLORS.textMuted}
-          style={styles.searchInput}
-        />
-      </View>
+        <View style={styles.searchBox}>
+          <Text style={styles.searchIcon}>🔍</Text>
+          <TextInput
+            value={query}
+            onChangeText={setQuery}
+            placeholder="खोजें — हनुमान चालीसा, गायत्री मंत्र…"
+            placeholderTextColor={COLORS.textMuted}
+            style={styles.searchInput}
+          />
+        </View>
 
-      <Text style={styles.sectionLabel}>देवता के अनुसार</Text>
-      <View style={styles.deityGrid}>
-        {DEITIES.map(d => (
-          <TouchableOpacity key={d.id} style={[styles.deityCard, { backgroundColor: d.color }]}>
-            <Text style={styles.deityEmoji}>{d.emoji}</Text>
-            <Text style={styles.deityName}>{d.name_hi}</Text>
-            <Text style={styles.deityNameEn}>{d.name_en}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-
-      <Text style={styles.sectionLabel}>दैनिक भक्ति</Text>
-      <View style={styles.dailyRow}>
-        <View style={styles.dailyCol}>
-          <Text style={styles.dailyTitle}>🌅 प्रातः मंत्र</Text>
-          {DAILY_BHAKTI.morning.map(m => (
-            <View key={m.id} style={styles.dailyItem}>
-              <Text style={styles.dailyItemTitle}>{m.title_hi}</Text>
-              <Text style={styles.dailyItemCount}>{m.count}× जप</Text>
-            </View>
+        {/* By Deity */}
+        <Text style={styles.sectionLabel}>देवता के अनुसार</Text>
+        <View style={styles.deityGrid}>
+          {DEITIES.map(d => (
+            <TouchableOpacity
+              key={d.id}
+              style={[styles.deityCard, { backgroundColor: d.color }]}
+              onPress={() => navigation.navigate('DeityDetail', { deityId: d.id })}
+              testID={`deity-${d.id}`}
+            >
+              <Text style={styles.deityEmoji}>{d.emoji}</Text>
+              <Text style={styles.deityName}>{d.name_hi}</Text>
+              <Text style={styles.deityNameEn}>{d.name_en}</Text>
+            </TouchableOpacity>
           ))}
         </View>
-        <View style={styles.dailyCol}>
-          <Text style={styles.dailyTitle}>🌙 सायं आरती</Text>
-          {DAILY_BHAKTI.evening.map(e => (
-            <View key={e.id} style={styles.dailyItem}>
-              <Text style={styles.dailyItemTitle}>{e.title_hi}</Text>
-              <Text style={styles.dailyItemCount}>{e.count}× आरती</Text>
-            </View>
-          ))}
-        </View>
-      </View>
 
-      <Text style={styles.sectionLabel}>प्रकार के अनुसार</Text>
-      <View style={styles.typeGrid}>
-        {BHAKTI_TYPES.map(t => (
-          <TouchableOpacity key={t.id} style={styles.typeCard}>
-            <Text style={styles.typeIcon}>{t.icon}</Text>
-            <Text style={styles.typeName}>{t.name_hi}</Text>
+        {/* Daily Bhakti */}
+        <Text style={styles.sectionLabel}>दैनिक भक्ति</Text>
+        <View style={styles.dailyRow}>
+          <View style={styles.dailyCol}>
+            <Text style={styles.dailyTitle}>🌅 प्रातः मंत्र</Text>
+            {DAILY_BHAKTI.morning.map(m => (
+              <TouchableOpacity key={m.id} style={styles.dailyItem}
+                onPress={() => navigation.navigate('ContentDetail', { contentId: m.id, source: 'daily', deityId: 'general' })}
+              >
+                <Text style={styles.dailyItemTitle}>{m.title_hi}</Text>
+                <Text style={styles.dailyItemCount}>{m.count}× जप</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <View style={styles.dailyCol}>
+            <Text style={styles.dailyTitle}>🌙 सायं आरती</Text>
+            {DAILY_BHAKTI.evening.map(e => (
+              <TouchableOpacity key={e.id} style={styles.dailyItem}
+                onPress={() => navigation.navigate('ContentDetail', { contentId: e.id, source: 'daily', deityId: 'general' })}
+              >
+                <Text style={styles.dailyItemTitle}>{e.title_hi}</Text>
+                <Text style={styles.dailyItemCount}>{e.count}× आरती</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+
+        {/* Explore */}
+        <Text style={styles.sectionLabel}>एक्सप्लोर — गहन ज्ञान</Text>
+        <View style={styles.exploreGrid}>
+          <TouchableOpacity style={[styles.exploreCard, { backgroundColor: '#FED7AA' }]}
+            onPress={() => navigation.navigate('Kathas')}
+            testID="explore-kathas"
+          >
+            <Text style={styles.exploreIcon}>📜</Text>
+            <Text style={styles.exploreTitle}>कथाएँ</Text>
+            <Text style={styles.exploreSub}>सत्यनारायण, भागवत…</Text>
           </TouchableOpacity>
-        ))}
-      </View>
-    </ScrollView>
+          <TouchableOpacity style={[styles.exploreCard, { backgroundColor: '#FDE68A' }]}
+            onPress={() => navigation.navigate('GranthList')}
+            testID="explore-granth"
+          >
+            <Text style={styles.exploreIcon}>📖</Text>
+            <Text style={styles.exploreTitle}>ग्रंथ</Text>
+            <Text style={styles.exploreSub}>गीता, रामायण, महाभारत</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.exploreCard, { backgroundColor: '#BFDBFE' }]}
+            onPress={() => navigation.navigate('VedasPuranas')}
+            testID="explore-vedas"
+          >
+            <Text style={styles.exploreIcon}>🕉️</Text>
+            <Text style={styles.exploreTitle}>वेद और पुराण</Text>
+            <Text style={styles.exploreSub}>4 वेद + पुराण</Text>
+          </TouchableOpacity>
+        </View>
+      </ScrollView>
+    </SafeScreen>
   );
 }
 
@@ -88,11 +121,12 @@ const styles = StyleSheet.create({
   dailyRow: { flexDirection: 'row', gap: 10, marginBottom: 18 },
   dailyCol: { flex: 1, backgroundColor: COLORS.surface, borderRadius: 12, padding: 12, borderWidth: 1, borderColor: COLORS.border },
   dailyTitle: { fontSize: 13, fontWeight: '700', color: COLORS.text, marginBottom: 8 },
-  dailyItem: { paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  dailyItem: { paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: COLORS.border },
   dailyItemTitle: { fontSize: 13, color: COLORS.text, fontWeight: '600' },
   dailyItemCount: { fontSize: 10, color: COLORS.textSecondary, marginTop: 1 },
-  typeGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  typeCard: { width: '31%', backgroundColor: COLORS.surface, borderRadius: 12, padding: 14, alignItems: 'center', borderWidth: 1, borderColor: COLORS.border },
-  typeIcon: { fontSize: 24 },
-  typeName: { fontSize: 13, fontWeight: '600', color: COLORS.text, marginTop: 4 },
+  exploreGrid: { gap: 10 },
+  exploreCard: { borderRadius: 14, padding: 16, flexDirection: 'row', alignItems: 'center', gap: 14 },
+  exploreIcon: { fontSize: 36 },
+  exploreTitle: { fontSize: 16, fontWeight: '800', color: COLORS.text },
+  exploreSub: { fontSize: 11, color: COLORS.textSecondary, marginTop: 2 },
 });

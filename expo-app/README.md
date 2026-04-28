@@ -1,138 +1,171 @@
 # Sanatan Saathi — Mobile App (Expo)
 
-A React Native mobile app for spiritual guidance, Kundli insights, Bhakti content, and AI chat.
+A React Native mobile app for spiritual guidance, Kundli insights, Bhakti content, and AI chat — connected to live backend.
 
-## 🎯 Features
+## ✨ Key Features
 
-- **5 Bottom Tabs**: Home, Bhakti, Kundli, Panchang, Profile
-- **Floating AI Chat** button on all screens
-- **Hindi-primary** UI with multilingual content
-- **Mock data** today (replace with backend `/api/...` later)
-- Audio support via Expo AV
+- **5 Bottom Tabs**: Home / Bhakti / Kundli / Panchang / Profile
+- **Bhakti deep navigation**: Deity → Content (Aarti/Chalisa/Mantra) → Play
+- **Explore section**: Kathas / Granth (Gita/Ramayana/Mahabharata) / Vedas & Puranas
+- **Floating 🤖 AI Chat** on every screen
+- **Live data** from backend (Panchang, Kundli, Dasha, Doshas, Mantras)
+- **Audio playback** via Expo AV (TTS-powered when configured)
+- **SafeArea** properly handled on all phones (no status bar / button overlap)
+- **Hindi-primary UI** with English subtitles
 
 ---
 
-## 📲 Run on your phone (Expo Go)
+## 📲 Quick Start (5 minutes)
 
-### One-time setup (on your computer)
-
-1. Install Node.js 18+ and Yarn.
-2. Install Expo CLI globally:
-   ```bash
-   npm install -g expo-cli
-   ```
-3. Install dependencies:
-   ```bash
-   cd expo-app
-   yarn install
-   ```
-
-### Start the dev server
+### 1. Install dependencies
 
 ```bash
 cd expo-app
+yarn install
+```
+
+### 2. Start dev server
+
+```bash
 npx expo start
 ```
 
-A QR code will appear in your terminal.
+A QR code appears.
 
-### Open on your phone
+### 3. Open on phone
 
-- **Android**: Install **Expo Go** from Play Store → open Expo Go → scan the QR code.
-- **iOS**: Install **Expo Go** from App Store → scan the QR code with Camera app → tap the banner to open in Expo Go.
+Install **Expo Go** ([Android](https://play.google.com/store/apps/details?id=host.exp.exponent) / [iOS](https://apps.apple.com/app/expo-go/id982107779)) → scan the QR code.
 
-> Both phone and computer must be on the same Wi-Fi.
+> Phone & computer must be on same Wi-Fi. If not, use `npx expo start --tunnel`.
+
+📖 **Detailed setup**: see `VS_CODE_EXPO_GO_SETUP.md`
 
 ---
 
-## 📂 Project Structure
+## 🧪 Test Flows (all should work)
+
+| # | Flow | Expected |
+|---|------|----------|
+| 1 | Bhakti → Hanuman → Hanuman Chalisa → ▶ Play | Full text + audio playback |
+| 2 | Bhakti → Explore → Kathas → Satyanarayan → 📖 Read / 🎧 Listen | Toggle works |
+| 3 | Bhakti → Explore → Granth → Bhagavad Gita → Chapter 1 (अर्जुन विषाद योग) → Verses | Real backend verses |
+| 4 | Bhakti → Explore → Vedas & Puranas → Rig Veda → Sukta list | List of suktas |
+| 5 | Home → Quick Action "मेरी कुंडली" | Switches to Kundli tab |
+| 6 | Floating 🤖 → Suggested prompt → AI replies | Live VedaChat |
+| 7 | Kundli → Overview | Real Graha scores + Doshas |
+| 8 | Kundli → Analysis | Real Mahadasha + Antardasha |
+| 9 | Panchang → Today | Real Tithi/Nakshatra/Yoga/Rahu Kaal (Swiss Ephemeris) |
+
+---
+
+## 🗂️ Folder Structure
 
 ```
 expo-app/
-├── App.js                          # Bottom tab navigator + AIChat modal
-├── package.json                    # expo, react-navigation, expo-av
-├── src/
-│   ├── components/
-│   │   └── FloatingAIButton.js     # Bottom-right floating AI button
-│   ├── config/
-│   │   └── api.js                  # Backend URL + COLORS theme
-│   ├── data/
-│   │   └── mockData.js             # All mock JSON data
-│   ├── screens/v2/
-│   │   ├── HomeScreen.js           # आज का उपाय / दशा / पंचांग / Quick / Trending
-│   │   ├── BhaktiScreen.js         # Search / Deities / Daily / Types
-│   │   ├── KundliScreen.js         # Top tabs: Overview / Charts / Analysis / Remedies
-│   │   ├── PanchangScreen.js       # Top tabs: Today / Monthly / Festivals / Muhurat
-│   │   ├── ProfileScreen.js        # User profile + settings
-│   │   └── AIChatScreen.js         # Modal AI chat with suggested prompts
-│   └── store/                      # Auth (legacy, unused for now)
-└── assets/                         # icons & splash
+├── App.js                              ← 5 bottom tabs + per-tab Stack + AIChat modal
+├── package.json
+├── VS_CODE_EXPO_GO_SETUP.md            ← Full step-by-step setup
+├── GOOGLE_CLOUD_TTS_SETUP.md           ← Audio TTS configuration
+└── src/
+    ├── api/
+    │   └── client.js                   ← Axios + auto-login + interceptors
+    ├── config/
+    │   └── api.js                      ← Backend URL + COLORS
+    ├── data/
+    │   └── mockData.js                 ← Fallback data + Hanuman/Shiva content
+    ├── hooks/
+    │   └── useApiData.js               ← Live API + mock fallback
+    ├── components/
+    │   ├── SafeScreen.js               ← Wraps every screen with SafeAreaView
+    │   ├── ScreenHeader.js             ← Back button + title
+    │   └── FloatingAIButton.js
+    └── screens/v2/
+        ├── HomeScreen.js
+        ├── BhaktiScreen.js              ← Deity grid + Daily + Explore
+        ├── DeityDetailScreen.js         ← Per-deity: Aarti/Chalisa/Mantra/Stotram
+        ├── ContentDetailScreen.js       ← Full text + ▶ Audio
+        ├── KathasScreen.js
+        ├── KathaDetailScreen.js         ← 📖 Read / 🎧 Listen toggle
+        ├── GranthListScreen.js          ← Live: Gita/Ramayana/Mahabharata
+        ├── GranthChaptersScreen.js
+        ├── GranthVersesScreen.js        ← Sanskrit + Hindi + ▶ verse audio
+        ├── VedasPuranasScreen.js        ← 4 Vedas + Puranas grid
+        ├── VedaSuktasScreen.js
+        ├── PuranaDetailScreen.js
+        ├── KundliScreen.js              ← Overview/Charts/Analysis/Remedies
+        ├── PanchangScreen.js            ← Today/Monthly/Festivals/Muhurat
+        ├── ProfileScreen.js
+        └── AIChatScreen.js              ← Modal AI chat
 ```
 
 ---
 
-## 🔌 Connect to Real Backend (Optional)
+## 🧭 Navigation Architecture (this is what was fixed)
 
-Edit `src/config/api.js`:
+**Per-tab Stack** — each tab has its own Stack so deep navigation works correctly:
+
+```
+Tabs (Bottom)
+ ├─ HomeTab → HomeStack → HomeScreen
+ ├─ BhaktiTab → BhaktiStack
+ │              ├─ BhaktiRoot
+ │              ├─ DeityDetail → ContentDetail
+ │              ├─ Kathas → KathaDetail
+ │              ├─ GranthList → GranthChapters → GranthVerses
+ │              └─ VedasPuranas → VedaSuktas / PuranaDetail
+ ├─ KundliTab → KundliStack → KundliScreen
+ ├─ PanchangTab → PanchangStack → PanchangScreen
+ └─ ProfileTab → ProfileStack → ProfileScreen
+
+RootStack (modal layer)
+ └─ AIChat (modal, accessible from any tab)
+```
+
+All screens wrapped in `<SafeScreen>` (which uses `react-native-safe-area-context`) — **no UI overlap with status bar or home indicator**.
+
+---
+
+## 🔊 Audio
+
+Uses **Expo AV** with TTS audio from backend (`/api/tts/synthesize`).
+
+To activate audio playback, configure Google Cloud TTS — see `GOOGLE_CLOUD_TTS_SETUP.md`.
+
+Without TTS configured, ▶ buttons gracefully show error message (no crash).
+
+---
+
+## 🌐 Backend Integration
+
+Configured in `src/config/api.js`:
 
 ```js
-export const API_BASE_URL = 'https://YOUR-BACKEND-URL/api';
+export const API_BASE_URL = 'https://integrated-platform-13.preview.emergentagent.com/api';
 ```
 
-Then in any screen, replace mock imports with `axios` calls:
+Endpoints used (auto-login as admin via `/api/auth/admin/login`):
 
-```js
-import axios from 'axios';
-import { API_BASE_URL } from '../../config/api';
+| Screen | Endpoint |
+|--------|----------|
+| Home | `/mobile/mantra-of-day`, `/mobile/panchang/today`, `/insights/today` |
+| Kundli Overview | `/kundli/my` |
+| Kundli Analysis | `/dasha/current` |
+| Granth List | `/granth/books` |
+| Granth Chapters | `/granth/hierarchy/{book_id}` |
+| Granth Verses | `/granth/chapter-verses/{chapter_id}` |
+| Vedas | `/vedas/books`, `/vedas/hierarchy/{id}` |
+| Panchang | `/mobile/panchang/today` |
+| AI Chat | `/vedachat/message` |
+| Audio | `/tts/synthesize` |
 
-const { data } = await axios.get(`${API_BASE_URL}/insights/today`);
-```
-
-Available backend endpoints:
-- `GET /api/insights/today`
-- `GET /api/dasha/current`
-- `GET /api/dosha/detect`
-- `GET /api/charts/d1-d9`
-- `GET /api/recommendations/mantra`
-- `POST /api/tts/synthesize`
-- `POST /api/vedachat/message`
+Falls back to local mock data if backend unreachable.
 
 ---
 
-## 🎨 Theme
+## 💡 Tip — Testing on real device while developing
 
-Defined in `src/config/api.js`:
+1. Run `npx expo start` in VS Code terminal
+2. Edit any file in `src/screens/v2/`
+3. **Save** → app on phone updates automatically
 
-| Token            | Value     | Use                              |
-|------------------|-----------|----------------------------------|
-| `primary`        | `#E95A34` | Saffron-orange (Sanatan)         |
-| `background`     | `#F8F3F1` | Warm cream                       |
-| `surface`        | `#FFFFFF` | Cards                            |
-| `text`           | `#374652` | Body                             |
-| `accent`         | `#FEF0EC` | Light saffron tint               |
-
----
-
-## 🧪 Test Checklist
-
-- [ ] Run `npx expo start` → QR appears
-- [ ] Scan with Expo Go on Android & iOS
-- [ ] All 5 tabs load (Home, Bhakti, Kundli, Panchang, Profile)
-- [ ] Floating 🤖 button opens AI Chat modal
-- [ ] Kundli screen — top tabs (Overview/Charts/Analysis/Remedies) switch correctly
-- [ ] Panchang screen — top tabs (Today/Monthly/Festivals/Muhurat) switch correctly
-- [ ] Audio plays from `▶ सुनें` button on Home
-
----
-
-## 🚀 Build for Stores
-
-```bash
-# Android (APK)
-npx eas build --platform android --profile preview
-
-# iOS (TestFlight)
-npx eas build --platform ios --profile preview
-```
-
-Requires free Expo account.
+Press `r` in terminal to force reload, `j` to open debugger, `m` for menu.

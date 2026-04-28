@@ -1,0 +1,47 @@
+{
+  "summary": "Iteration 8: Verified Sanatan Saathi Expo mobile app restructuring (Bhakti per-tab Stack, SafeAreaProvider/SafeScreen wrapping, intent-based navigation, live admin DB for Granth/Vedas, full Hanuman flow). Backend regression + new Granth/Vedas tests = 20/20 pytest pass. Web admin regression confirmed dashboard cards + admin pages still functional.",
+  "verified_checks": {
+    "FILE STRUCTURE (12 new files)": "ALL PRESENT with non-zero size — SafeScreen.js (15L), ScreenHeader.js (31L), DeityDetailScreen.js (72L), ContentDetailScreen.js (123L), KathasScreen.js (68L), KathaDetailScreen.js (100L), GranthListScreen.js (61L), GranthChaptersScreen.js (68L), GranthVersesScreen.js (112L), VedasPuranasScreen.js (92L), VedaSuktasScreen.js (62L), PuranaDetailScreen.js (44L)",
+    "App.js architecture": "PASS — SafeAreaProvider + NavigationContainer wrap. Per-tab stacks: HomeStackNav/BhaktiStackNav/KundliStackNav/PanchangStackNav/ProfileStackNav. BhaktiStack has all 11 screens (BhaktiRoot, DeityDetail, ContentDetail, Kathas, KathaDetail, GranthList, GranthChapters, GranthVerses, VedasPuranas, VedaSuktas, PuranaDetail).",
+    "SafeScreen wrapping (16 screens)": "PASS — All 16 target screens (HomeScreen, BhaktiScreen, KundliScreen, PanchangScreen, ProfileScreen, AIChatScreen, DeityDetailScreen, ContentDetailScreen, KathasScreen, KathaDetailScreen, GranthListScreen, GranthChaptersScreen, GranthVersesScreen, VedasPuranasScreen, VedaSuktasScreen, PuranaDetailScreen) import & use SafeScreen — verified via grep.",
+    "BhaktiScreen explore cards": "PASS — testIDs explore-kathas / explore-granth / explore-vedas all present.",
+    "DEITY_CONTENT counts": "PASS — hanuman:3 (chalisa+aarti+bajrang-baan stotram), shiva:3, krishna:2, durga:2, ganesha:2, rama:2.",
+    "Hanuman Chalisa text integrity": "PASS — text_hi length=2298 chars, contains '॥ चौपाई ॥' marker, opening 'जय हनुमान ज्ञान गुन सागर', and ending verse marker '॥ ४० ॥'/dohas. NOT truncated.",
+    "GET /api/granth/books": "200 — returns 3 books: Bhagavad Gita (श्रीमद्भगवद्गीता), Ramcharitmanas (श्रीरामचरितमानस), Mahabharata (महाभारत).",
+    "GET /api/granth/hierarchy/{id}": "200 — chapters[] with chapter_num, title_hi, verse_count fields present.",
+    "GET /api/granth/chapter-verses/{id}?lang=hi": "200 — verses[] with sanskrit + meaning structure (meaning.hi or display_meaning).",
+    "GET /api/vedas/books": "200 — returns >=4 vedas.",
+    "GET /api/vedas/hierarchy/{id}": "200 — keys: book/chapters/total_chapters.",
+    "Astrology regression (10 endpoints)": "PASS — /insights/today, /dasha/current, /dosha/detect, /charts/d1-d9, /kundli/my, /recommendations/mantra, /notifications/today, /mobile/panchang/today, /mobile/mantra-of-day, /tts/providers all 200.",
+    "api/client.js exports": "PASS — listGranthBooks, getGranthHierarchy, getGranthChapterVerses, listVedaBooks, getVedaHierarchy, getVedaChapterVerses, ttsSynthesize, vedaChat all defined.",
+    "ESLint /app/expo-app/src": "PASS — No issues found.",
+    "Web regression — admin login + dashboard": "PASS — admin@sanatansaathi.com login → /admin/dashboard. DailyUpayaCard (आज का उपाय) + DashaInfluenceCard (वर्तमान दशा प्रभाव) render with content. Stats: 3 Granths, 4 Vedas, 2 Kathas, 3 Artis.",
+    "Web regression — /admin/graha-kundli": "PASS — page loads.",
+    "Web regression — /admin/vedachat voice buttons": "PASS — 2 voice buttons found."
+  },
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_granth_vedas.py",
+    "/app/backend/tests/test_mobile_endpoints.py",
+    "/app/test_reports/pytest/iter8_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Mobile app restructure is solid: per-tab Stack pattern correctly isolates inner-screen navigation (fixes the Bhakti inner-link bug). SafeAreaProvider at root + SafeScreen wrapper on every leaf screen is a clean pattern.",
+    "Granth/Vedas screens correctly call live admin DB endpoints — no stale mockData fallback for these flows (only Kathas remain embedded which is intentional per request).",
+    "GranthVersesScreen handles both meaning.hi and display_meaning shapes (defensive parsing) — good resilience against schema variance.",
+    "Hanuman Chalisa stored inline in mockData.js (~2.3KB) is fine for now; eventually migrate to admin DB for editorial control.",
+    "Carry-over: backend server.py still >5000 lines (noted in iter6/7) — not in scope for this review."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_granth_vedas.py (new — 5 pytest cases for Granth + Vedas endpoints)"
+  ],
+  "success_rate": {"backend": "100% (20/20 pytest: 5 granth/vedas + 15 mobile/astrology regression)", "frontend": "100% (web admin regression all green; mobile app verified via static analysis only — cannot run Expo in container)"},
+  "test_credentials": "admin@sanatansaathi.com / SanatanAdmin@2026 — login verified",
+  "seed_data_creation": "none",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Mobile app cannot be runtime-tested in container. Static checks (file existence, grep SafeScreen, grep BhaktiStack screens, ESLint, mockData parsing) + live backend pytest cover all verifiable surfaces. If a runtime smoke test is ever needed, use Expo Web build or EAS preview. Backend Granth returns 'Ramcharitmanas' (not 'Ramayana' literal) — the Tulsidas retelling — this is correct per admin DB seed.",
+  "rca of the issue": "N/A — no bugs found in this iteration. Initial test assertion mismatch (expected 'ramayan' substring) was a test-side issue, not a product issue; corrected to accept 'ramcharitmanas'."
+}

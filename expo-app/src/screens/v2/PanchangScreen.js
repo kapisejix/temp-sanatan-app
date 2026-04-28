@@ -4,6 +4,7 @@ import { COLORS } from '../../config/api';
 import { TODAY_PANCHANG, MONTHLY_PANCHANG, FESTIVALS, MUHURATS } from '../../data/mockData';
 import api from '../../api/client';
 import useApiData from '../../hooks/useApiData';
+import SafeScreen from '../../components/SafeScreen';
 
 const TABS = ['Today', 'Monthly', 'Festivals', 'Muhurat'];
 const TAB_LABELS = { Today: 'आज', Monthly: 'मासिक', Festivals: 'त्योहार', Muhurat: 'मुहूर्त' };
@@ -88,7 +89,7 @@ function MuhuratTab() {
 export default function PanchangScreen() {
   const [active, setActive] = useState('Today');
   return (
-    <View style={styles.root}>
+    <SafeScreen>
       <View style={styles.tabBar}>
         {TABS.map(t => (
           <TouchableOpacity key={t} style={[styles.tabItem, active === t && styles.tabItemActive]} onPress={() => setActive(t)}>
@@ -102,7 +103,7 @@ export default function PanchangScreen() {
         {active === 'Festivals' && <FestivalsTab />}
         {active === 'Muhurat' && <MuhuratTab />}
       </ScrollView>
-    </View>
+    </SafeScreen>
   );
 }
 

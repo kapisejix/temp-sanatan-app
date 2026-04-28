@@ -2,6 +2,7 @@ import React, { useState, useRef } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, TextInput, StyleSheet, KeyboardAvoidingView, Platform } from 'react-native';
 import { COLORS } from '../../config/api';
 import api from '../../api/client';
+import SafeScreen from '../../components/SafeScreen';
 
 const SUGGESTED = [
   'आज का शुभ समय क्या है?',
@@ -51,7 +52,8 @@ export default function AIChatScreen({ navigation }) {
   };
 
   return (
-    <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <SafeScreen edges={['top','left','right','bottom']}>
+      <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()}><Text style={styles.back}>‹</Text></TouchableOpacity>
         <View style={{ flex: 1, alignItems: 'center' }}>
@@ -104,7 +106,8 @@ export default function AIChatScreen({ navigation }) {
           <Text style={{ color: '#FFF', fontWeight: '700' }}>➤</Text>
         </TouchableOpacity>
       </View>
-    </KeyboardAvoidingView>
+      </KeyboardAvoidingView>
+    </SafeScreen>
   );
 }
 

@@ -7,6 +7,7 @@ import {
 } from '../../data/mockData';
 import api from '../../api/client';
 import useApiData from '../../hooks/useApiData';
+import SafeScreen from '../../components/SafeScreen';
 
 function Section({ title, children, accent }) {
   return (
@@ -99,13 +100,22 @@ function PanchangCard({ data }) {
 }
 
 function QuickActions({ navigation }) {
+  const TAB_MAP = { kundli: 'KundliTab', bhakti: 'BhaktiTab', panchang: 'PanchangTab' };
   return (
     <View style={styles.quickRow}>
       {QUICK_ACTIONS.map(qa => (
         <TouchableOpacity
           key={qa.id}
           style={styles.quickBtn}
-          onPress={() => qa.screen === 'AIChat' ? navigation.navigate('AIChat') : navigation.jumpTo && navigation.jumpTo(qa.screen)}
+          onPress={() => {
+            if (qa.id === 'ai') {
+              navigation.navigate('AIChat');
+            } else {
+              const tab = TAB_MAP[qa.id];
+              if (tab) navigation.getParent()?.navigate(tab);
+            }
+          }}
+          testID={`quick-${qa.id}`}
         >
           <Text style={styles.quickIcon}>{qa.icon}</Text>
           <Text style={styles.quickLabel}>{qa.label_hi}</Text>
@@ -189,32 +199,34 @@ export default function HomeScreen({ navigation }) {
   };
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.content}>
-      <View style={styles.greetRow}>
-        <Text style={styles.greet}>नमस्ते 🙏</Text>
-        <Text style={styles.greetSub}>आज का आध्यात्मिक मार्गदर्शन</Text>
-      </View>
-
-      <UpayaCard data={upaya} onPlay={togglePlay} playing={playing} loading={loading} onWhy={() => setWhyModal(!whyModal)} />
-      {whyModal && (
-        <View style={styles.whyBox}>
-          <Text style={styles.whyText}>{upayaWhy}</Text>
+    <SafeScreen>
+      <ScrollView style={styles.root} contentContainerStyle={styles.content}>
+        <View style={styles.greetRow}>
+          <Text style={styles.greet}>नमस्ते 🙏</Text>
+          <Text style={styles.greetSub}>आज का आध्यात्मिक मार्गदर्शन</Text>
         </View>
-      )}
 
-      <DashaCard insights={dashaInterp} dasha={dasha} />
-      <PanchangCard data={panchang.data} />
+        <UpayaCard data={upaya} onPlay={togglePlay} playing={playing} loading={loading} onWhy={() => setWhyModal(!whyModal)} />
+        {whyModal && (
+          <View style={styles.whyBox}>
+            <Text style={styles.whyText}>{upayaWhy}</Text>
+          </View>
+        )}
 
-      <Section title="त्वरित कार्य">
-        <QuickActions navigation={navigation} />
-      </Section>
+        <DashaCard insights={dashaInterp} dasha={dasha} />
+        <PanchangCard data={panchang.data} />
 
-      <Section title="ट्रेंडिंग भक्ति">
-        <View style={styles.card}>
-          <TrendingList onPlayItem={togglePlay} />
-        </View>
-      </Section>
-    </ScrollView>
+        <Section title="त्वरित कार्य">
+          <QuickActions navigation={navigation} />
+        </Section>
+
+        <Section title="ट्रेंडिंग भक्ति">
+          <View style={styles.card}>
+            <TrendingList onPlayItem={togglePlay} />
+          </View>
+        </Section>
+      </ScrollView>
+    </SafeScreen>
   );
 }
 

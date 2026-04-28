@@ -2,6 +2,7 @@ import React from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
 import { COLORS } from '../../config/api';
 import { KUNDLI_OVERVIEW } from '../../data/mockData';
+import SafeScreen from '../../components/SafeScreen';
 
 export default function ProfileScreen({ navigation }) {
   const user = { name: 'Test User', email: 'user@sanatansaathi.com' };
@@ -16,24 +17,26 @@ export default function ProfileScreen({ navigation }) {
   ];
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.content}>
-      <View style={styles.header}>
-        <View style={styles.avatar}><Text style={styles.avatarText}>{(user.name || 'U').charAt(0)}</Text></View>
-        <Text style={styles.name}>{user.name}</Text>
-        <Text style={styles.email}>{user.email}</Text>
-      </View>
+    <SafeScreen>
+      <ScrollView style={styles.root} contentContainerStyle={styles.content}>
+        <View style={styles.header}>
+          <View style={styles.avatar}><Text style={styles.avatarText}>{(user.name || 'U').charAt(0)}</Text></View>
+          <Text style={styles.name}>{user.name}</Text>
+          <Text style={styles.email}>{user.email}</Text>
+        </View>
 
-      {items.map((it, i) => (
-        <TouchableOpacity key={i} style={styles.row} onPress={it.action}>
-          <Text style={styles.rowIcon}>{it.icon}</Text>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.rowLabel}>{it.label_hi}</Text>
-            {!!it.sub && <Text style={styles.rowSub}>{it.sub}</Text>}
-          </View>
-          <Text style={styles.rowArrow}>›</Text>
-        </TouchableOpacity>
-      ))}
-    </ScrollView>
+        {items.map((it, i) => (
+          <TouchableOpacity key={i} style={styles.row} onPress={it.action}>
+            <Text style={styles.rowIcon}>{it.icon}</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.rowLabel}>{it.label_hi}</Text>
+              {!!it.sub && <Text style={styles.rowSub}>{it.sub}</Text>}
+            </View>
+            <Text style={styles.rowArrow}>›</Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+    </SafeScreen>
   );
 }
 

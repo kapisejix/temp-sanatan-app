@@ -79,6 +79,13 @@ export const api = {
   // Public (no auth)
   getPanchangToday: () => axios.get(`${API_BASE_URL}/mobile/panchang/today`).then(r => r.data),
   getMantraOfDay: () => axios.get(`${API_BASE_URL}/mobile/mantra-of-day`).then(r => r.data),
+  // Content (no auth)
+  listGranthBooks: () => axios.get(`${API_BASE_URL}/granth/books`).then(r => r.data),
+  getGranthHierarchy: (bookId) => axios.get(`${API_BASE_URL}/granth/hierarchy/${bookId}`).then(r => r.data),
+  getGranthChapterVerses: (chapterId, lang = 'hi') => axios.get(`${API_BASE_URL}/granth/chapter-verses/${chapterId}?lang=${lang}`).then(r => r.data),
+  listVedaBooks: () => axios.get(`${API_BASE_URL}/vedas/books`).then(r => r.data),
+  getVedaHierarchy: (bookId) => axios.get(`${API_BASE_URL}/vedas/hierarchy/${bookId}`).then(r => r.data),
+  getVedaChapterVerses: (chapterId, lang = 'hi') => axios.get(`${API_BASE_URL}/vedas/chapter-verses/${chapterId}?lang=${lang}`).then(r => r.data),
 
   // Authenticated
   ensureLogin: async () => {
