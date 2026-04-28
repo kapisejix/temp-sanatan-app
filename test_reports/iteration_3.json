@@ -1,0 +1,59 @@
+{
+  "summary": "Comprehensive testing of Graha-based Mantra Recommendation System (Kundli + Swiss Ephemeris + Multilingual TTS + Dashboard Upaya). Backend 8/8 pytest tests PASSED (100%). Frontend login, sidebar replacement, DailyUpayaCard multilingual toggle + weekday mapping, GrahaKundliPage form submission + kundli generation, and TTS graceful error all verified working.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Sidebar", "issues": ["Sidebar nav data-testid for Graha & Kundli is 'nav-admin/graha-kundli' (contains slash from to.slice(1)); works but unclean. Consider replacing with 'nav-graha-kundli' for consistency."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_graha_kundli.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Normalize sidebar nav data-testid naming to avoid slashes for easier test selectors."
+  ],
+  "critical_code_review_comments": [
+    "Good: kundli_engine.py uses Swiss Ephemeris deterministically, no AI guesswork as required. GRAHA_MANTRA_MAP is complete for all 9 grahas with Hindi + English variants.",
+    "Good: tts_service.py implements clean provider factory (Google/OpenAI/ElevenLabs) with helpful ValueError when creds missing — propagated to 400 HTTP status (verified).",
+    "Good: /api/notifications/today correctly maps weekday via DAY_TO_GRAHA (Tuesday=Mars verified visually).",
+    "server.py has grown to ~4867 lines — consider extracting kundli/tts/notifications routers into separate modules (per 700-line rule).",
+    "/api/kundli/generate upserts kundli_data but also deletes and re-inserts graha_scores and daily_recommendations on every call; this is fine for idempotency but may be heavy if called frequently — consider bulk_write.",
+    "/api/graha/score accepts kundli_id but does not validate ownership (any admin can score any kundli_id). Minor, for single super_admin role not critical now.",
+    "GrahaKundliPage form: no client-side validation error toast on failed submit beyond native HTML5 required; acceptable.",
+    "DailyUpayaCard TTS error surfaced via console 400 (confirmed) but consider replacing browser alert with an in-UI toast for better UX."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_graha_kundli.py (new pytest suite — 8 tests)"
+  ],
+  "success_rate": {"backend": "100% (8/8)", "frontend": "100% (all critical flows pass)"},
+  "test_credentials": "admin@sanatansaathi.com / SanatanAdmin@2026 (verified working)",
+  "seed_data_creation": "Kundli was generated for Test User, Male, 1990-08-15 10:30 Delhi India. Ascendant = Tula (Libra) at 202.44°. No afflictions detected (all 9 grahas in LOW/MEDIUM) — recommendations correctly empty with message 'कोई विशेष उपाय आवश्यक नहीं — आपकी कुंडली शुभ है'.",
+  "passed_tests": [
+    "Backend: POST /api/kundli/generate — returns ascendant, 9 planets (Sun..Saturn+Rahu+Ketu), 9 graha_scores, recommendations",
+    "Backend: GET /api/kundli/my — returns saved kundli",
+    "Backend: POST /api/graha/score — recomputes 9 scores with priorities HIGH/MEDIUM/LOW and 0..100 range",
+    "Backend: GET /api/recommendations/mantra — returns list (may be empty — verified)",
+    "Backend: GET /api/mantras/all — returns 9 graha-mantra mappings with Hindi+English",
+    "Backend: GET /api/notifications/today — day-based notification with correct weekday→Graha (Tuesday→Mars verified)",
+    "Backend: GET /api/tts/providers — returns google/openai/elevenlabs + 12 languages",
+    "Backend: POST /api/tts/synthesize — returns 400 with helpful message 'Google Cloud TTS not configured' (graceful)",
+    "Frontend: Login at /login with admin credentials succeeds and redirects to /admin/dashboard",
+    "Frontend: Sidebar shows 'Graha & Kundli' link and does NOT show 'Nakshatra & Upaya'",
+    "Frontend: Dashboard renders DailyUpayaCard with Tuesday→मंगल (Mars/Hanuman Ji) mantra in Hindi by default",
+    "Frontend: DailyUpayaCard हि/EN toggle switches Hindi↔English text correctly",
+    "Frontend: /admin/graha-kundli loads GrahaKundliPage with form fields (name/gender/dob/tob/place)",
+    "Frontend: GrahaKundliPage हिन्दी/English toggle switches labels (verified EN text differs from HI)",
+    "Frontend: Form submission generates Kundli — displays Ascendant (तुला / Libra 202.44°), all 9 planets in table with rashi/house/degree/nakshatra, combust/retrograde status",
+    "Frontend: TTS Play button on DailyUpayaCard triggers graceful 400 response (console confirmed, TTS error indicator visible)"
+  ],
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "All graha-kundli/mantra/TTS/notifications features fully working end-to-end. Admin login path is /login (NOT /admin/login). Sidebar nav testid for top-level items follows pattern `nav-admin/graha-kundli` (with slash). Swiss Ephemeris is installed & working. TTS returns 400 until Google Cloud creds configured in Integration Hub — this IS expected behavior. Test user Delhi 1990-08-15 10:30 produces all LOW/MEDIUM priority grahas so recommendations list stays empty (expected).",
+  "rca_of_the_issue": "N/A — no bugs found."
+}

@@ -3074,9 +3074,13 @@ INTEGRATION_CATEGORIES = {
         {"key": "ai_model_parsing", "label": "Parsing Model", "type": "text", "description": "Model for DOCX/PDF parsing"},
     ]},
     "tts_audio": {"label": "Text-to-Speech", "icon": "headphones", "fields": [
-        {"key": "tts_provider", "label": "TTS Provider", "type": "select", "options": ["openai", "google", "azure"], "description": "Which TTS provider to use"},
-        {"key": "tts_default_voice", "label": "Default Voice", "type": "text", "description": "Default voice (e.g., echo, alloy, onyx)"},
-        {"key": "tts_default_model", "label": "Default Model", "type": "text", "description": "tts-1 or tts-1-hd"},
+        {"key": "tts_provider", "label": "TTS Provider", "type": "select", "options": ["google", "openai", "elevenlabs"], "description": "Which TTS provider to use (switchable)"},
+        {"key": "google_cloud_credentials_json", "label": "Google Cloud Service Account JSON", "type": "secret", "description": "Paste full JSON content of GCP service account (TTS API enabled)"},
+        {"key": "google_cloud_api_key", "label": "Google Cloud API Key (alt)", "type": "secret", "description": "Alternative: API key with TTS API enabled"},
+        {"key": "elevenlabs_api_key", "label": "ElevenLabs API Key", "type": "secret", "description": "Get from elevenlabs.io"},
+        {"key": "elevenlabs_voice_id", "label": "ElevenLabs Voice ID", "type": "text", "description": "Default voice id"},
+        {"key": "tts_default_voice", "label": "Default Voice", "type": "text", "description": "Default voice (e.g., hi-IN-Wavenet-A, echo, alloy)"},
+        {"key": "tts_default_model", "label": "Default Model", "type": "text", "description": "tts-1, tts-1-hd, eleven_multilingual_v2"},
     ]},
     "image_gen": {"label": "Image Generation", "icon": "image", "fields": [
         {"key": "image_provider", "label": "Provider", "type": "select", "options": ["gemini_nano_banana", "dall_e", "midjourney"], "description": "Image generation provider"},
@@ -4666,6 +4670,176 @@ async def get_all_mantras():
             await db.mantras.insert_one({"graha": graha, "graha_hi": GRAHA_NAMES_HI.get(graha, graha), **info})
         mantras = await db.mantras.find({}).to_list(20)
     return [serialize_doc(m) for m in mantras]
+
+
+# ===================== TTS (Switchable Providers) =====================
+
+from tts_service import get_tts_provider, encode_mp3_base64
+import hashlib
+import asyncio
+
+@api_router.post("/tts/synthesize")
+async def synthesize_audio(request: Request, admin: dict = Depends(get_current_admin)):
+    """
+    Generate TTS audio for given text & language using configured provider.
+    Cache by hash to avoid re-billing.
+    Body: { text: str, language: "hi"|"en"|"sa"|..., voice?: str, force?: bool }
+    Returns: { audio_base64, mime_type, language, provider, cached }
+    """
+    body = await request.json()
+    text = (body.get("text") or "").strip()
+    language = body.get("language", "hi")
+    voice = body.get("voice")
+    force = bool(body.get("force", False))
+
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    if len(text) > 4500:
+        raise HTTPException(status_code=400, detail="Text exceeds 4500 chars")
+
+    provider_name = (await get_setting("tts_provider", "google")).lower()
+    cache_key = hashlib.sha256(f"{provider_name}|{language}|{voice or ''}|{text}".encode("utf-8")).hexdigest()
+
+    # Check cache
+    if not force:
+        cached = await db.tts_cache.find_one({"key": cache_key})
+        if cached:
+            return {
+                "audio_base64": cached["audio_base64"],
+                "mime_type": "audio/mpeg",
+                "language": language,
+                "provider": provider_name,
+                "cached": True,
+            }
+
+    # Generate
+    try:
+        provider = await get_tts_provider(get_setting)
+        loop = asyncio.get_event_loop()
+        audio_bytes = await loop.run_in_executor(None, lambda: provider.synthesize(text, language, voice))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"TTS synthesize error: {e}")
+        raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}")
+
+    audio_b64 = encode_mp3_base64(audio_bytes)
+
+    # Save cache (limit doc size — 16MB Mongo limit; mantras are small)
+    try:
+        await db.tts_cache.update_one(
+            {"key": cache_key},
+            {"$set": {
+                "key": cache_key,
+                "audio_base64": audio_b64,
+                "language": language,
+                "provider": provider_name,
+                "text_preview": text[:80],
+                "voice": voice or "",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }},
+            upsert=True,
+        )
+    except Exception as e:
+        logger.warning(f"TTS cache save skipped: {e}")
+
+    return {
+        "audio_base64": audio_b64,
+        "mime_type": "audio/mpeg",
+        "language": language,
+        "provider": provider_name,
+        "cached": False,
+    }
+
+
+@api_router.get("/tts/providers")
+async def list_tts_providers():
+    return {
+        "providers": ["google", "openai", "elevenlabs"],
+        "current": (await get_setting("tts_provider", "google")).lower(),
+        "languages": list({"hi","en","sa","ta","te","bn","mr","gu","kn","ml","pa","od"}),
+    }
+
+
+# ===================== NOTIFICATIONS (Daily / Weekly Mantra Reminders) =====================
+
+DAY_TO_GRAHA = {
+    0: "Moon", 1: "Mars", 2: "Mercury", 3: "Jupiter",
+    4: "Venus", 5: "Saturn", 6: "Sun",  # Mon..Sun (weekday())
+}
+
+@api_router.get("/notifications/today")
+async def get_today_notifications(admin: dict = Depends(get_current_admin)):
+    """
+    Build today's notifications:
+      - Top recommendation from kundli (highest affliction)
+      - Day-based reminder (e.g., Saturday → Shani)
+    Returns multilingual content.
+    """
+    today_dt = datetime.now(timezone.utc)
+    today_str = today_dt.strftime("%Y-%m-%d")
+    weekday = today_dt.weekday()
+    day_graha = DAY_TO_GRAHA[weekday]
+
+    notifications = []
+
+    # 1. Day-based reminder (always available)
+    day_info = GRAHA_MANTRA_MAP.get(day_graha, {})
+    notifications.append({
+        "type": "day_based",
+        "graha": day_graha,
+        "graha_hi": GRAHA_NAMES_HI.get(day_graha, day_graha),
+        "title_hi": f"आज {day_info.get('day_hi','')} है — {GRAHA_NAMES_HI.get(day_graha,'')} का दिन",
+        "title_en": f"Today is {day_info.get('day','')} — {day_graha}'s day",
+        "mantra": day_info.get("mantra", ""),
+        "mantra_en": day_info.get("mantra_en", ""),
+        "count": day_info.get("count", 108),
+        "remedy_hi": day_info.get("remedy_hi", ""),
+        "remedy_en": day_info.get("remedy_en", ""),
+        "devta_hi": day_info.get("devta_hi", ""),
+        "color_hi": day_info.get("color_hi", ""),
+        "date": today_str,
+    })
+
+    # 2. Personalised (from kundli) — top recommendation
+    kundli = await db.kundli_data.find_one({"user_id": admin["_id"]})
+    if kundli and kundli.get("top_recommendations"):
+        for rec in kundli["top_recommendations"][:1]:
+            r = rec["recommendation"]
+            notifications.append({
+                "type": "personalised",
+                "graha": rec["graha"],
+                "graha_hi": rec["graha_hi"],
+                "title_hi": f"आपकी कुंडली के अनुसार {rec['graha_hi']} शान्ति आवश्यक",
+                "title_en": f"Per your Kundli: {rec['graha']} shanti is recommended",
+                "mantra": r.get("mantra", ""),
+                "mantra_en": r.get("mantra_en", ""),
+                "count": r.get("count", 108),
+                "remedy_hi": r.get("remedy_hi", ""),
+                "remedy_en": r.get("remedy_en", ""),
+                "devta_hi": r.get("devta_hi", ""),
+                "color_hi": r.get("color_hi", ""),
+                "score": rec.get("score", 0),
+                "reasons": rec.get("reasons", []),
+                "date": today_str,
+            })
+
+    # Persist for audit / mobile push
+    try:
+        await db.notifications.update_one(
+            {"user_id": admin["_id"], "date": today_str},
+            {"$set": {
+                "user_id": admin["_id"],
+                "date": today_str,
+                "items": notifications,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }},
+            upsert=True,
+        )
+    except Exception:
+        pass
+
+    return {"date": today_str, "weekday": weekday, "notifications": notifications}
 
 
 # ===================== ROOT =====================

@@ -4,6 +4,7 @@ import {
   FileText, Users, BookOpen, Music, Flame, Library, BookMarked,
   MessageCircle, TrendingUp, ArrowUpRight
 } from 'lucide-react';
+import DailyUpayaCard from '../components/DailyUpayaCard';
 
 const StatCard = ({ icon: Icon, label, value, color, delay }) => (
   <div className={`bg-white rounded-xl border border-[#E8E4E1] p-5 hover:shadow-sm hover:-translate-y-[1px] transition-all duration-200 animate-fade-in stagger-${delay}`} data-testid={`stat-${label.toLowerCase().replace(/\s+/g, '-')}`}>
@@ -76,6 +77,9 @@ export default function DashboardPage() {
           <StatCard key={card.label} {...card} delay={i + 1} />
         ))}
       </div>
+
+      {/* Today's Upaya — Multilingual */}
+      <DailyUpayaCard />
 
       {/* Category Breakdown + Recent Content */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
