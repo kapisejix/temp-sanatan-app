@@ -4490,6 +4490,10 @@ async def get_supported_languages():
 # ===================== KUNDLI & GRAHA MANTRA SYSTEM =====================
 
 from kundli_engine import generate_kundli, calculate_graha_scores, get_top_recommendations, GRAHA_MANTRA_MAP, GRAHA_NAMES_HI
+from dasha_engine import compute_vimshottari_dasha, get_current_dasha, interpret_current_dasha
+from dosha_engine import detect_all_doshas
+from d9_engine import build_navamsa_chart
+from ai_interpreter import interpret_dasha, interpret_dosha
 
 @api_router.post("/kundli/generate")
 async def create_kundli(request: Request, admin: dict = Depends(get_current_admin)):
@@ -4514,6 +4518,36 @@ async def create_kundli(request: Request, admin: dict = Depends(get_current_admi
     scores = calculate_graha_scores(kundli["planets"])
     recommendations = get_top_recommendations(scores)
 
+    # Compute D9 (Navamsa) chart
+    asc_lon = kundli["ascendant"]["degree"]
+    d9_chart = build_navamsa_chart(kundli["planets"], asc_lon)
+
+    # Compute Vimshottari Dasha (use Moon longitude)
+    moon_planet = next((p for p in kundli["planets"] if p["graha"] == "Moon"), None)
+    dasha_data = None
+    current_dasha = None
+    dasha_interpretation = None
+    if moon_planet:
+        # Birth datetime for dasha calculation
+        from datetime import datetime as _dt
+        import pytz as _pytz
+        try:
+            tz = _pytz.timezone(kundli["location"].get("timezone", "Asia/Kolkata"))
+            year, month, day = map(int, dob.split("-"))
+            hour, minute = map(int, tob.split(":"))
+            birth_local = tz.localize(_dt(year, month, day, hour, minute))
+            birth_utc = birth_local.astimezone(_pytz.utc)
+            dasha_data = compute_vimshottari_dasha(birth_utc, moon_planet["degree"])
+            current_dasha = get_current_dasha(dasha_data)
+            if current_dasha:
+                dasha_interpretation = interpret_current_dasha(current_dasha, scores)
+        except Exception as e:
+            logger.error(f"Dasha calculation error: {e}")
+
+    # Detect Doshas
+    asc_rashi_idx = int(asc_lon / 30.0)
+    doshas = detect_all_doshas(kundli["planets"], asc_rashi_idx)
+
     now = datetime.now(timezone.utc).isoformat()
 
     # Save to database
@@ -4529,6 +4563,11 @@ async def create_kundli(request: Request, admin: dict = Depends(get_current_admi
         "planets": kundli["planets"],
         "graha_scores": scores,
         "top_recommendations": recommendations,
+        "d9_chart": d9_chart,
+        "dasha_data": dasha_data,
+        "current_dasha": current_dasha,
+        "dasha_interpretation": dasha_interpretation,
+        "doshas": doshas,
         "julian_day": kundli["julian_day"],
         "created_at": now,
         "updated_at": now,
@@ -4592,6 +4631,10 @@ async def create_kundli(request: Request, admin: dict = Depends(get_current_admi
         "planets": kundli["planets"],
         "graha_scores": scores,
         "recommendations": recommendations,
+        "d9_chart": d9_chart,
+        "current_dasha": current_dasha,
+        "dasha_interpretation": dasha_interpretation,
+        "doshas": doshas,
     }
 
 
@@ -4840,6 +4883,183 @@ async def get_today_notifications(admin: dict = Depends(get_current_admin)):
         pass
 
     return {"date": today_str, "weekday": weekday, "notifications": notifications}
+
+
+# ===================== DASHA / DOSHA / CHARTS / AI INSIGHTS =====================
+
+async def _load_user_kundli(user_id):
+    return await db.kundli_data.find_one({"user_id": user_id})
+
+
+@api_router.get("/dasha/current")
+async def api_current_dasha(admin: dict = Depends(get_current_admin)):
+    """Return current Mahadasha + Antardasha + rule-based interpretation."""
+    kundli = await _load_user_kundli(admin["_id"])
+    if not kundli:
+        raise HTTPException(status_code=404, detail="No Kundli found. Generate one first.")
+
+    if kundli.get("current_dasha") and kundli.get("dasha_interpretation"):
+        return {
+            "current_dasha": kundli["current_dasha"],
+            "interpretation": kundli["dasha_interpretation"],
+            "cached": True,
+        }
+
+    # Recompute on the fly
+    if not kundli.get("dasha_data"):
+        raise HTTPException(status_code=500, detail="Dasha data missing — regenerate Kundli")
+
+    current = get_current_dasha(kundli["dasha_data"])
+    if not current:
+        return {"current_dasha": None, "interpretation": None, "cached": False}
+    interp = interpret_current_dasha(current, kundli.get("graha_scores", []))
+    # Update cache
+    await db.kundli_data.update_one(
+        {"_id": kundli["_id"]},
+        {"$set": {"current_dasha": current, "dasha_interpretation": interp,
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"current_dasha": current, "interpretation": interp, "cached": False}
+
+
+@api_router.post("/dasha/interpret")
+async def api_dasha_interpret_ai(request: Request, admin: dict = Depends(get_current_admin)):
+    """AI Hybrid Layer: Convert structured dasha output → 2-4 line Hindi explanation."""
+    body = await request.json()
+    language = body.get("language", "hi")
+
+    kundli = await _load_user_kundli(admin["_id"])
+    if not kundli or not kundli.get("current_dasha"):
+        raise HTTPException(status_code=404, detail="No current Dasha found. Generate Kundli first.")
+
+    interp = kundli.get("dasha_interpretation")
+    if not interp:
+        interp = interpret_current_dasha(kundli["current_dasha"], kundli.get("graha_scores", []))
+
+    # Cached AI explanation per language
+    cache_key = f"dasha_ai_{language}"
+    cached_ai = (kundli.get("ai_cache") or {}).get(cache_key)
+    if cached_ai:
+        return {"interpretation": interp, "ai_explanation": cached_ai, "language": language, "cached": True}
+
+    ai_text = await interpret_dasha(interp, kundli["current_dasha"], language=language)
+
+    # Save to cache
+    ai_cache = kundli.get("ai_cache", {}) or {}
+    ai_cache[cache_key] = ai_text
+    await db.kundli_data.update_one({"_id": kundli["_id"]}, {"$set": {"ai_cache": ai_cache}})
+
+    return {"interpretation": interp, "ai_explanation": ai_text, "language": language, "cached": False}
+
+
+@api_router.get("/dosha/detect")
+async def api_dosha_detect(admin: dict = Depends(get_current_admin)):
+    """Return Mangal/Kaal Sarp/Sade Sati doshas."""
+    kundli = await _load_user_kundli(admin["_id"])
+    if not kundli:
+        raise HTTPException(status_code=404, detail="No Kundli found")
+
+    if kundli.get("doshas"):
+        return {"doshas": kundli["doshas"], "cached": True}
+
+    asc_rashi_idx = int(kundli["ascendant"]["degree"] / 30.0)
+    doshas = detect_all_doshas(kundli["planets"], asc_rashi_idx)
+    await db.kundli_data.update_one({"_id": kundli["_id"]}, {"$set": {"doshas": doshas}})
+    return {"doshas": doshas, "cached": False}
+
+
+@api_router.post("/dosha/interpret")
+async def api_dosha_interpret_ai(request: Request, admin: dict = Depends(get_current_admin)):
+    """AI explanation for a specific dosha type."""
+    body = await request.json()
+    dosha_type = body.get("dosha_type", "")  # mangal_dosha | kaal_sarp_dosha | sade_sati
+    language = body.get("language", "hi")
+
+    kundli = await _load_user_kundli(admin["_id"])
+    if not kundli or not kundli.get("doshas"):
+        raise HTTPException(status_code=404, detail="Doshas not detected — generate Kundli first")
+
+    dosha = kundli["doshas"].get(dosha_type)
+    if not dosha:
+        raise HTTPException(status_code=400, detail=f"Unknown dosha type: {dosha_type}")
+
+    cache_key = f"dosha_{dosha_type}_{language}"
+    cached_ai = (kundli.get("ai_cache") or {}).get(cache_key)
+    if cached_ai:
+        return {"dosha": dosha, "ai_explanation": cached_ai, "cached": True}
+
+    ai_text = await interpret_dosha(dosha, dosha_type, language=language)
+
+    ai_cache = kundli.get("ai_cache", {}) or {}
+    ai_cache[cache_key] = ai_text
+    await db.kundli_data.update_one({"_id": kundli["_id"]}, {"$set": {"ai_cache": ai_cache}})
+    return {"dosha": dosha, "ai_explanation": ai_text, "cached": False}
+
+
+@api_router.get("/charts/d1-d9")
+async def api_charts(admin: dict = Depends(get_current_admin)):
+    """Return D1 (Lagna) + D9 (Navamsa) chart data for SVG rendering."""
+    kundli = await _load_user_kundli(admin["_id"])
+    if not kundli:
+        raise HTTPException(status_code=404, detail="No Kundli found")
+
+    asc_lon = kundli["ascendant"]["degree"]
+    asc_idx = int(asc_lon / 30.0)
+    d1 = {
+        "ascendant": {"rashi_idx": asc_idx, "rashi": kundli["ascendant"]["rashi"],
+                      "rashi_hi": kundli["ascendant"]["rashi_hi"]},
+        "planets": [{
+            "graha": p["graha"], "graha_hi": p["graha_hi"],
+            "rashi_idx": p["rashi_idx"], "rashi": p["rashi"], "rashi_hi": p["rashi_hi"],
+            "house": p["house"], "is_retrograde": p["is_retrograde"],
+        } for p in kundli["planets"]],
+    }
+
+    d9 = kundli.get("d9_chart") or build_navamsa_chart(kundli["planets"], asc_lon)
+    return {"d1": d1, "d9": d9}
+
+
+@api_router.get("/insights/today")
+async def api_insights_today(admin: dict = Depends(get_current_admin)):
+    """
+    Combined daily insights — Dasha + top remedy + dosha-aware notification.
+    Aggregates structured rule output + (optional) AI explanation.
+    """
+    kundli = await _load_user_kundli(admin["_id"])
+    if not kundli:
+        return {"available": False, "message": "No Kundli — generate one first."}
+
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    # Dasha
+    current_dasha = kundli.get("current_dasha")
+    dasha_interp = kundli.get("dasha_interpretation")
+
+    # Active doshas (only severe ones)
+    doshas = kundli.get("doshas", {}) or {}
+    active_doshas = []
+    for k, d in doshas.items():
+        if d.get("present") and d.get("severity") in ("MEDIUM", "HIGH"):
+            active_doshas.append({
+                "type": k,
+                "type_hi": {"mangal_dosha": "मंगल दोष", "kaal_sarp_dosha": "काल सर्प दोष", "sade_sati": "साढ़े साती"}.get(k, k),
+                "severity": d.get("severity"),
+                "severity_hi": d.get("severity_hi"),
+                "explanation_hi": d.get("explanation_hi"),
+                "explanation_en": d.get("explanation_en"),
+            })
+
+    # Top recommended mantra
+    top_recs = (kundli.get("top_recommendations") or [])[:1]
+
+    return {
+        "available": True,
+        "date": today_str,
+        "current_dasha": current_dasha,
+        "dasha_interpretation": dasha_interp,
+        "active_doshas": active_doshas,
+        "top_recommendation": top_recs[0] if top_recs else None,
+    }
 
 
 # ===================== ROOT =====================

@@ -4,6 +4,9 @@ import {
   Sparkles, MapPin, Calendar, Clock, User, Loader2, Play, Pause,
   AlertCircle, TrendingUp, ChevronRight, Volume2, RefreshCw, Globe2
 } from 'lucide-react';
+import NorthIndianChart from '../components/NorthIndianChart';
+import DashaInfluenceCard from '../components/DashaInfluenceCard';
+import DoshaPanel from '../components/DoshaPanel';
 
 const T = {
   hi: {
@@ -135,6 +138,11 @@ export default function GrahaKundliPage() {
             planets: data.planets,
             graha_scores: data.graha_scores,
             recommendations: data.top_recommendations,
+            d9_chart: data.d9_chart,
+            current_dasha: data.current_dasha,
+            dasha_interpretation: data.dasha_interpretation,
+            doshas: data.doshas,
+            kundli_id: String(data._id || ''),
           });
           setForm({
             name: data.name || '',
@@ -271,6 +279,34 @@ export default function GrahaKundliPage() {
       {/* Results */}
       {result && (
         <>
+          {/* Dasha Influence */}
+          <DashaInfluenceCard language={lang} key={`dasha-${lang}-${result?.kundli_id || 'k'}`} />
+
+          {/* Dosha Panel */}
+          <DoshaPanel language={lang} key={`dosha-${lang}-${result?.kundli_id || 'k'}`} />
+
+          {/* Charts D1 + D9 */}
+          {(result.d9_chart || result.ascendant) && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-fade-in">
+              {result.ascendant && (
+                <NorthIndianChart
+                  ascendantRashiIdx={Math.floor(result.ascendant.degree / 30)}
+                  planets={(result.planets || []).map(p => ({ graha: p.graha, rashi_idx: p.rashi_idx, is_retrograde: p.is_retrograde }))}
+                  title={lang === 'hi' ? 'लग्न कुंडली (D1)' : 'Lagna Kundli (D1)'}
+                  language={lang}
+                />
+              )}
+              {result.d9_chart && (
+                <NorthIndianChart
+                  ascendantRashiIdx={result.d9_chart.ascendant.rashi_idx}
+                  planets={result.d9_chart.planets}
+                  title={lang === 'hi' ? 'नवांश कुंडली (D9)' : 'Navamsa Kundli (D9)'}
+                  language={lang}
+                />
+              )}
+            </div>
+          )}
+
           {/* Recommendations */}
           <div className="bg-gradient-to-br from-[#FEF0EC] to-white rounded-xl border border-[#FDDDD4] p-6 animate-fade-in" data-testid="kundli-recommendations">
             <div className="flex items-center justify-between mb-4">

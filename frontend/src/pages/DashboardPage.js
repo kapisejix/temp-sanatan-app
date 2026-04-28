@@ -5,6 +5,7 @@ import {
   MessageCircle, TrendingUp, ArrowUpRight
 } from 'lucide-react';
 import DailyUpayaCard from '../components/DailyUpayaCard';
+import DashaInfluenceCard from '../components/DashaInfluenceCard';
 
 const StatCard = ({ icon: Icon, label, value, color, delay }) => (
   <div className={`bg-white rounded-xl border border-[#E8E4E1] p-5 hover:shadow-sm hover:-translate-y-[1px] transition-all duration-200 animate-fade-in stagger-${delay}`} data-testid={`stat-${label.toLowerCase().replace(/\s+/g, '-')}`}>
@@ -80,6 +81,9 @@ export default function DashboardPage() {
 
       {/* Today's Upaya — Multilingual */}
       <DailyUpayaCard />
+
+      {/* Current Dasha Influence */}
+      <DashaInfluenceCard language="hi" />
 
       {/* Category Breakdown + Recent Content */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
