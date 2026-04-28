@@ -6,66 +6,77 @@ Multilingual spiritual platform: React Admin Panel + FastAPI Backend + Expo Mobi
 ## Sessions
 
 ### Session 1: Foundation (existing GitHub import + Multilingual + Import Wizard + Granth Manager)
-### Session 2: Vedas & VedaChat AI (hierarchical scripture + Claude knowledge-grounded chat)
+### Session 2: Vedas & VedaChat AI
 ### Session 3: Smart Search + Expo skeleton
 ### Session 4: Graha-based Mantra + Multilingual TTS (Google/OpenAI/ElevenLabs switchable)
-### Session 5: AI + Rule-Based Astrology Intelligence
-- Vimshottari Dasha Engine (MD+AD, 5-domain impact)
-- Dosha Detection (Mangal/Kaal Sarp/Sade Sati real Saturn transit)
-- D9 Navamsa Engine
-- AI Hybrid Interpreter (Claude rule-bound, 2-4 line, no hallucination)
-- North Indian Kundli SVG (D1+D9)
-- Dashboard "वर्तमान दशा प्रभाव"
+### Session 5: AI + Rule-Based Astrology Intelligence (Vimshottari Dasha, Doshas, D9, AI Hybrid Layer, Charts)
+### Session 6: Voice + Mobile App scaffold (browser STT + speaker, Expo 5-tab + AI chat modal)
 
-### Session 6: Voice + Mobile App (Feb 2026 — current)
-- **VedaChat Voice (Web)**:
-  - `useSpeechRecognition` hook — browser SpeechRecognition Web API (Chrome/Edge), 9-language picker
-  - Auto-detect Devanagari for TTS language routing
-  - `SpeakerButton` plays AI answers via `/api/tts/synthesize`
-  - "उत्तर सुनाएँ (auto-speak)" toggle for hands-free experience
-- **Mobile App** (`/app/expo-app/` — Expo, mock data first):
-  - 5 bottom tabs: Home, Bhakti, Kundli, Panchang, Profile
-  - Floating AI Chat button (bottom-right, all screens)
-  - HomeScreen: आज का उपाय (with Play + Why?), वर्तमान दशा प्रभाव, आज का पंचांग, Quick Actions, Trending Bhakti
-  - BhaktiScreen: search, deity grid (6 deities), daily morning/evening, types grid (6 types)
-  - KundliScreen: 4 top tabs (Overview/Charts/Analysis/Remedies) — score bars, dosha summary, D1/D9 placeholder, predictions, audio remedy
-  - PanchangScreen: 4 top tabs (Today/Monthly/Festivals/Muhurat)
-  - ProfileScreen: profile + settings + about
-  - AIChatScreen: modal with suggested prompts, mock conversational AI
-  - Mock data via `src/data/mockData.js` (TODAY_UPAYA, CURRENT_DASHA, TODAY_PANCHANG, TRENDING_BHAKTI, DEITIES, BHAKTI_TYPES, KUNDLI_OVERVIEW, MONTHLY_PANCHANG, FESTIVALS, MUHURATS)
-  - Audio playback via Expo AV
-  - Setup README with QR / Expo Go instructions
+### Session 7: Mobile Live Backend + P1 Items (Feb 2026 — current)
+- **Mobile API Client** (`src/api/client.js`):
+  - axios + AsyncStorage token persistence
+  - Auto-login with default admin credentials
+  - 401 retry with re-login interceptor
+  - Public + authenticated method namespaces
+- **Mobile Hooks** (`src/hooks/useApiData.js`) — universal data fetcher with mock fallback
+- **Live screens** — HomeScreen, KundliScreen, PanchangScreen, AIChatScreen now hit real backend
+- **HomeScreen Audio** — `▶ सुनें` button calls `/api/tts/synthesize` and plays MP3 via Expo AV
+- **AIChatScreen** — uses `/api/vedachat/message` (Claude); offline fallback maintained
+- **New Backend Endpoints** (`mobile_extras.py`):
+  - `GET /api/mobile/panchang/today` — real Swiss Ephemeris Tithi/Nakshatra/Yoga/Karana/Sunrise/Sunset/Rahu Kaal per lat/lon/tz; verified Delhi/Mumbai/Chennai give correct location-specific values
+  - `GET /api/mobile/mantra-of-day` — public day-based mantra (rotates by weekday)
+- **APScheduler** — daily 06:00 IST job creating notifications for all users with kundli (day-based + personalised + Sade Sati alerts)
+- **VS Code + Expo Go Setup Guide** (`/app/expo-app/VS_CODE_EXPO_GO_SETUP.md`)
+  - Step-by-step from Node install → Expo Go on phone → hot reload workflow
+  - Recommended VS Code extensions
+  - Troubleshooting matrix
+  - Tunnel mode for different Wi-Fi
+  - EAS build instructions for APK/IPA
+- **Google Cloud TTS Setup Guide** (`/app/expo-app/GOOGLE_CLOUD_TTS_SETUP.md`)
+  - Step-by-step Google Cloud project + service account JSON
+  - Cost estimates (free tier covers personal use)
+  - Switching to OpenAI / ElevenLabs without code changes
 
 ## Architecture
-- Backend: FastAPI + MongoDB (this platform)
-- Admin Panel: React.js (this platform)
-- Mobile App: Expo/React Native (user runs locally, scans Expo Go QR)
-- AI: Claude via Emergent LLM Key (VedaChat, DOCX parse, astrology rule-bound interpreter)
-- Astrology: Swiss Ephemeris (`pyswisseph`) — deterministic, no LLM
+- Backend: FastAPI + MongoDB + APScheduler + Swiss Ephemeris + emergentintegrations (Claude)
+- Admin Panel: React.js
+- Mobile App: Expo / React Native (axios client → live backend with mock fallback)
+- AI: Claude via Emergent LLM Key
 - TTS: Switchable (Google / OpenAI / ElevenLabs)
-- Voice Input: Browser Web Speech API (free, no SDK)
+- Voice STT: Browser Web Speech API (Web only; mobile can add Expo Speech Recognition later)
+
+## DB Collections
+- `kundli_data` — Full Kundli + d9 + dasha + dosha + ai_cache + top_recommendations
+- `tts_cache` — Base64 audio cache by hash
+- `notifications` — Daily notification log (auto-populated by APScheduler 06:00 IST)
+- `integration_settings` — TTS provider + API keys
+- `mantras`, `graha_scores`, `daily_recommendations` — supporting collections
 
 ## Backlog
-### P1
-- [ ] User-level Kundli (currently per-admin) — required for mobile app real users
-- [ ] APScheduler + push notifications (Dasha change, Sade Sati start, daily reminders)
-- [ ] Google Cloud TTS service account JSON (user must provide via Integration Hub)
-- [ ] Connect mobile app screens to live backend (replace mockData with axios)
-
+### P1 — All COMPLETE this session ✅
 ### P2
+- [ ] User signup/login screen on mobile (currently auto-admin)
 - [ ] Pratyantardasha (3rd-level dasha)
 - [ ] D7/D10 charts; Yoga detection (Raj/Dhana/Gajakesari)
-- [ ] Refactor `server.py` (~5050 lines) → `routes/` modules
-- [ ] Mobile app: deep-link integration, biometric auth
-- [ ] Expo build configs (EAS) for Play Store + App Store
+- [ ] Refactor `server.py` (~5100 lines) → `routes/` modules
+- [ ] Push notifications via Expo Notifications + OneSignal
+- [ ] EAS build configs for Play Store + App Store
+- [ ] Mobile Bhakti screen — connect to /api/content/categories
 - [ ] Server-side bulk write optimisation
+- [ ] Native voice STT on mobile (Expo Speech Recognition)
+- [ ] Pratyantar Dasha for mobile
 
 ## Key API Endpoints
+### Public (no auth)
+- `GET /api/mobile/panchang/today` (real Swiss Ephemeris)
+- `GET /api/mobile/mantra-of-day`
+- `POST /api/auth/admin/login`
+
+### Authenticated
 - `POST /api/kundli/generate`, `GET /api/kundli/my`
 - `GET /api/dasha/current`, `POST /api/dasha/interpret`
 - `GET /api/dosha/detect`, `POST /api/dosha/interpret`
 - `GET /api/charts/d1-d9`
-- `GET /api/insights/today`
-- `GET /api/notifications/today`
+- `GET /api/insights/today`, `GET /api/notifications/today`
 - `POST /api/tts/synthesize`, `GET /api/tts/providers`
 - `POST /api/vedachat/message`
