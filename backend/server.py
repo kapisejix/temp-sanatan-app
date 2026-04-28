@@ -1,88 +1,3926 @@
-from fastapi import FastAPI, APIRouter
 from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
-import os
-import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List
-import uuid
-from datetime import datetime, timezone
-
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
+
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, UploadFile, File, Form, Depends
+from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from motor.motor_asyncio import AsyncIOMotorClient
+import os
+import logging
+import uuid
+import bcrypt
+import jwt
+import re
+import hashlib
+import time
+from datetime import datetime, timezone, timedelta
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any
+from bson import ObjectId
+from cryptography.fernet import Fernet
+import base64
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-# Create the main app without a prefix
 app = FastAPI()
-
-# Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
 
+JWT_SECRET = os.environ['JWT_SECRET']
+JWT_ALGORITHM = "HS256"
 
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# ===================== SECURITY: ENCRYPTION =====================
+
+def get_fernet_key():
+    secret = JWT_SECRET.encode()
+    key = base64.urlsafe_b64encode(hashlib.sha256(secret).digest())
+    return Fernet(key)
+
+def encrypt_value(value: str) -> str:
+    if not value:
+        return value
+    return get_fernet_key().encrypt(value.encode()).decode()
+
+def decrypt_value(encrypted: str) -> str:
+    if not encrypted:
+        return encrypted
+    try:
+        return get_fernet_key().decrypt(encrypted.encode()).decode()
+    except Exception:
+        return encrypted
+
+def mask_secret(value: str) -> str:
+    if not value or len(value) < 8:
+        return "***"
+    return value[:4] + "*" * (len(value) - 8) + value[-4:]
+
+# ===================== SECURITY: INPUT SANITIZATION =====================
+
+def sanitize_input(text: str) -> str:
+    if not text:
+        return text
+    text = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r'javascript:', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'on\w+\s*=', '', text, flags=re.IGNORECASE)
+    dangerous_patterns = ['$where', '$regex', '$gt', '$lt', '$ne', '$or', '$and', '$nor', '$not', '$exists']
+    for pattern in dangerous_patterns:
+        if pattern in text and not text.startswith('{'):
+            text = text.replace(pattern, '')
+    return text.strip()
+
+def sanitize_dict(data: dict) -> dict:
+    cleaned = {}
+    for k, v in data.items():
+        if isinstance(v, str):
+            cleaned[k] = sanitize_input(v)
+        elif isinstance(v, dict):
+            cleaned[k] = sanitize_dict(v)
+        elif isinstance(v, list):
+            cleaned[k] = [sanitize_input(i) if isinstance(i, str) else i for i in v]
+        else:
+            cleaned[k] = v
+    return cleaned
+
+# ===================== SECURITY: RATE LIMITING =====================
+
+rate_limit_store = {}
+
+def check_rate_limit(identifier: str, max_requests: int = 10, window_seconds: int = 60) -> bool:
+    now = time.time()
+    key = f"rl:{identifier}"
+    if key not in rate_limit_store:
+        rate_limit_store[key] = []
+    rate_limit_store[key] = [t for t in rate_limit_store[key] if t > now - window_seconds]
+    if len(rate_limit_store[key]) >= max_requests:
+        return False
+    rate_limit_store[key].append(now)
+    return True
+
+def get_client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+# ===================== SECURITY: AUDIT TRAIL =====================
+
+async def log_audit(action: str, admin_id: str = None, admin_email: str = None, details: dict = None, ip: str = "", status: str = "success"):
+    audit = {
+        "action": action,
+        "admin_id": admin_id,
+        "admin_email": admin_email,
+        "details": details or {},
+        "ip_address": ip,
+        "status": status,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "user_agent": ""
+    }
+    try:
+        await db.audit_trail.insert_one(audit)
+    except Exception as e:
+        logger.error(f"Audit log failed: {e}")
+
+# ===================== SECURITY: TOKEN BLACKLIST =====================
+
+token_blacklist = set()
+
+async def is_token_blacklisted(token: str) -> bool:
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    if token_hash in token_blacklist:
+        return True
+    bl = await db.token_blacklist.find_one({"token_hash": token_hash})
+    if bl:
+        token_blacklist.add(token_hash)
+        return True
+    return False
+
+async def blacklist_token(token: str):
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    token_blacklist.add(token_hash)
+    await db.token_blacklist.insert_one({"token_hash": token_hash, "blacklisted_at": datetime.now(timezone.utc).isoformat()})
+
+# ===================== SECURITY: MIDDLEWARE =====================
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        return response
+
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        start = time.time()
+        ip = get_client_ip(request)
+        path = request.url.path
+
+        # Rate limit check for sensitive endpoints
+        if path in ["/api/auth/admin/login", "/api/auth/user/send-otp", "/api/auth/user/verify-otp"]:
+            if not check_rate_limit(f"{ip}:{path}", max_requests=5, window_seconds=60):
+                await log_audit("rate_limit_exceeded", ip=ip, details={"path": path}, status="blocked")
+                from starlette.responses import JSONResponse
+                return JSONResponse(status_code=429, content={"detail": "Too many requests. Please wait before trying again."})
+
+        response = await call_next(request)
+        duration = round(time.time() - start, 3)
+
+        # Log suspicious activity
+        if response.status_code in [401, 403]:
+            try:
+                await db.security_events.insert_one({
+                    "event_type": "auth_failure",
+                    "ip_address": ip,
+                    "path": path,
+                    "method": request.method,
+                    "status_code": response.status_code,
+                    "user_agent": request.headers.get("user-agent", ""),
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                })
+            except Exception:
+                pass
+
+        if response.status_code >= 400:
+            logger.warning(f"[{response.status_code}] {request.method} {path} - {ip} - {duration}s")
+
+        return response
+
+# ===================== HELPERS =====================
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+def verify_password(plain: str, hashed: str) -> bool:
+    return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+
+def create_access_token(user_id: str, email: str, role: str) -> str:
+    payload = {"sub": user_id, "email": email, "role": role, "exp": datetime.now(timezone.utc) + timedelta(hours=24), "type": "access"}
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def create_refresh_token(user_id: str) -> str:
+    payload = {"sub": user_id, "exp": datetime.now(timezone.utc) + timedelta(days=7), "type": "refresh"}
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def serialize_doc(doc):
+    if doc is None:
+        return None
+    doc = dict(doc)
+    if "_id" in doc:
+        doc["_id"] = str(doc["_id"])
+    for k, v in doc.items():
+        if isinstance(v, ObjectId):
+            doc[k] = str(v)
+        elif isinstance(v, datetime):
+            doc[k] = v.isoformat()
+    return doc
+
+async def get_current_admin(request: Request) -> dict:
+    token = request.cookies.get("access_token")
+    if not token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    # Check blacklist
+    if await is_token_blacklisted(token):
+        raise HTTPException(status_code=401, detail="Token has been revoked")
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if payload.get("type") != "access":
+            raise HTTPException(status_code=401, detail="Invalid token type")
+        admin = await db.admin_users.find_one({"_id": ObjectId(payload["sub"])})
+        if not admin or not admin.get("is_active", True):
+            raise HTTPException(status_code=401, detail="User not found or inactive")
+        result = serialize_doc(admin)
+        result["_ip"] = get_client_ip(request)
+        return result
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+def require_role(roles: list):
+    async def check(request: Request):
+        admin = await get_current_admin(request)
+        if admin["role"] not in roles:
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        return admin
+    return check
+
+# ===================== AUTH ENDPOINTS =====================
+
+class AdminLoginReq(BaseModel):
+    email: str
+    password: str
+
+class AdminRegisterReq(BaseModel):
+    email: str
+    password: str
+    name: str
+    role: str = "content_admin"
+
+@api_router.post("/auth/admin/login")
+async def admin_login(req: AdminLoginReq, request: Request, response: Response):
+    ip = get_client_ip(request)
+    email = sanitize_input(req.email.lower())
+
+    admin = await db.admin_users.find_one({"email": email})
+    if not admin:
+        await log_audit("login_failed", admin_email=email, ip=ip, details={"reason": "email_not_found"}, status="failed")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    if not verify_password(req.password, admin["password_hash"]):
+        await log_audit("login_failed", admin_id=str(admin["_id"]), admin_email=email, ip=ip, details={"reason": "wrong_password"}, status="failed")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    if not admin.get("is_active", True):
+        await log_audit("login_failed", admin_id=str(admin["_id"]), admin_email=email, ip=ip, details={"reason": "account_disabled"}, status="failed")
+        raise HTTPException(status_code=403, detail="Account disabled")
+    admin_id = str(admin["_id"])
+    access_token = create_access_token(admin_id, admin["email"], admin["role"])
+    refresh_token = create_refresh_token(admin_id)
+    response.set_cookie(key="access_token", value=access_token, httponly=True, secure=False, samesite="lax", max_age=86400, path="/")
+    response.set_cookie(key="refresh_token", value=refresh_token, httponly=True, secure=False, samesite="lax", max_age=604800, path="/")
+    await db.admin_users.update_one({"_id": admin["_id"]}, {"$set": {"last_login_at": datetime.now(timezone.utc).isoformat(), "last_login_ip": ip}})
+    await log_audit("login_success", admin_id=admin_id, admin_email=email, ip=ip, details={"role": admin["role"]})
+    return {"token": access_token, "user": serialize_doc(admin)}
+
+@api_router.post("/auth/admin/register")
+async def admin_register(req: AdminRegisterReq, admin: dict = Depends(require_role(["super_admin"]))):
+    existing = await db.admin_users.find_one({"email": req.email.lower()})
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    if req.role not in ["super_admin", "content_admin", "moderator"]:
+        raise HTTPException(status_code=400, detail="Invalid role")
+    doc = {
+        "email": req.email.lower(),
+        "password_hash": hash_password(req.password),
+        "name": req.name,
+        "role": req.role,
+        "is_active": True,
+        "created_by": admin["_id"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "last_login_at": None
+    }
+    result = await db.admin_users.insert_one(doc)
+    doc["_id"] = str(result.inserted_id)
+    doc.pop("password_hash", None)
+    return doc
+
+@api_router.get("/auth/me")
+async def auth_me(request: Request):
+    admin = await get_current_admin(request)
+    admin.pop("password_hash", None)
+    return admin
+
+@api_router.post("/auth/logout")
+async def auth_logout(request: Request, response: Response):
+    token = request.cookies.get("access_token")
+    if not token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+    if token:
+        await blacklist_token(token)
+    refresh = request.cookies.get("refresh_token")
+    if refresh:
+        await blacklist_token(refresh)
+    response.delete_cookie("access_token", path="/")
+    response.delete_cookie("refresh_token", path="/")
+    await log_audit("logout", ip=get_client_ip(request))
+    return {"message": "Logged out"}
+
+@api_router.post("/auth/refresh")
+async def auth_refresh(request: Request, response: Response):
+    token = request.cookies.get("refresh_token")
+    if not token:
+        raise HTTPException(status_code=401, detail="No refresh token")
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if payload.get("type") != "refresh":
+            raise HTTPException(status_code=401, detail="Invalid token type")
+        admin = await db.admin_users.find_one({"_id": ObjectId(payload["sub"])})
+        if not admin:
+            raise HTTPException(status_code=401, detail="User not found")
+        admin_id = str(admin["_id"])
+        new_access = create_access_token(admin_id, admin["email"], admin["role"])
+        response.set_cookie(key="access_token", value=new_access, httponly=True, secure=False, samesite="lax", max_age=86400, path="/")
+        return {"token": new_access}
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Refresh token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+# ===================== FORGOT / RESET PASSWORD =====================
+
+class ForgotPasswordReq(BaseModel):
+    email: str
+
+class ResetPasswordReq(BaseModel):
+    token: str
+    new_password: str
+
+@api_router.post("/auth/forgot-password")
+async def forgot_password(req: ForgotPasswordReq):
+    import secrets
+    email = req.email.lower().strip()
+    admin = await db.admin_users.find_one({"email": email})
+    if not admin:
+        return {"message": "If this email exists, a reset link has been sent."}
+
+    token = secrets.token_urlsafe(32)
+    await db.password_reset_tokens.insert_one({
+        "admin_id": str(admin["_id"]),
+        "email": email,
+        "token": token,
+        "used": False,
+        "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat()
+    })
+
+    # In production, send email. For now, log the reset link.
+    reset_link = f"/reset-password?token={token}"
+    logger.info(f"Password reset link for {email}: {reset_link}")
+    await log_audit("password_reset_requested", admin_email=email, details={"token_preview": token[:8]})
+
+    return {"message": "If this email exists, a reset link has been sent.", "debug_token": token}
+
+@api_router.post("/auth/reset-password")
+async def reset_password(req: ResetPasswordReq):
+    token_doc = await db.password_reset_tokens.find_one({"token": req.token, "used": False})
+    if not token_doc:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+
+    if token_doc.get("expires_at") and token_doc["expires_at"] < datetime.now(timezone.utc).isoformat():
+        raise HTTPException(status_code=400, detail="Reset token has expired")
+
+    if len(req.new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+
+    new_hash = hash_password(req.new_password)
+    await db.admin_users.update_one({"_id": ObjectId(token_doc["admin_id"])}, {"$set": {"password_hash": new_hash}})
+    await db.password_reset_tokens.update_one({"_id": token_doc["_id"]}, {"$set": {"used": True}})
+    await log_audit("password_reset_completed", admin_email=token_doc.get("email"))
+
+    return {"message": "Password reset successfully. You can now login with your new password."}
+
+# ===================== CONTACT FORM =====================
+
+@api_router.post("/public/contact")
+async def submit_contact(request: Request):
+    body = await request.json()
+    contact = {
+        "name": sanitize_input(body.get("name", "")),
+        "email": sanitize_input(body.get("email", "")),
+        "phone": sanitize_input(body.get("phone", "")),
+        "subject": sanitize_input(body.get("subject", "")),
+        "message": sanitize_input(body.get("message", "")),
+        "ip": get_client_ip(request),
+        "status": "new",
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    if not contact["name"] or not contact["message"]:
+        raise HTTPException(status_code=400, detail="Name and message are required")
+    await db.contact_submissions.insert_one(contact)
+    return {"message": "Thank you! Your message has been received."}
+
+@api_router.get("/admin/contacts")
+async def list_contacts(admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    contacts = await db.contact_submissions.find({}).sort("created_at", -1).to_list(100)
+    return [serialize_doc(c) for c in contacts]
+
+# ===================== BIRTH CHART ANALYSIS (Enhanced) =====================
+
+@api_router.post("/public/birth-chart")
+async def analyze_birth_chart(request: Request):
+    body = await request.json()
+    name = body.get("name", "")
+    dob = body.get("dob", "")
+    birth_time = body.get("birth_time", "")
+    birth_place = body.get("birth_place", "")
+
+    if not name or not dob:
+        raise HTTPException(status_code=400, detail="Name and date of birth are required")
+
+    ip = get_client_ip(request)
+    # Rate limit: 3 chart analyses per IP per day
+    if not check_rate_limit(f"chart:{ip}", max_requests=3, window_seconds=86400):
+        raise HTTPException(status_code=429, detail="Daily limit reached. Download the app for unlimited access.")
+
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        chat = LlmChat(
+            api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
+            session_id=f"chart-{uuid.uuid4()}",
+            system_message="""You are an expert Vedic astrologer (Jyotish Shastra). Based on the user's birth details, provide a comprehensive analysis.
+
+You MUST respond in this exact JSON format:
+{
+  "nakshatra": {"name_en": "", "name_hi": "", "num": 1, "pada": 1},
+  "rashi": {"name_en": "", "name_hi": ""},
+  "ruling_graha": {"name_en": "", "name_hi": "", "nature": "benefic/malefic"},
+  "nakshatra_deity": "",
+  "grah_dosh": [{"graha": "", "dosh_name": "", "description_hi": "", "description_en": ""}],
+  "daily_mantras": [{"mantra_sa": "", "mantra_transliteration": "", "meaning_hi": "", "when_to_chant": "", "count": 108}],
+  "recommended_pujas": [{"puja_name_hi": "", "puja_name_en": "", "description": "", "best_day": "", "deity": ""}],
+  "remedies": [{"remedy_hi": "", "remedy_en": "", "type": "mantra/daan/vrat/gemstone/yantra"}],
+  "gemstone": {"name_en": "", "name_hi": "", "wearing_finger": "", "wearing_day": ""},
+  "lucky": {"numbers": [], "colors_hi": [], "colors_en": [], "day_hi": "", "day_en": ""},
+  "personality_traits": {"strengths_hi": "", "strengths_en": "", "challenges_hi": "", "challenges_en": ""},
+  "general_guidance_hi": "",
+  "general_guidance_en": ""
+}
+
+If birth time is not provided, give analysis based on date and place only. Be specific with mantras in Sanskrit with transliteration."""
+        )
+        chat.with_model("anthropic", "claude-sonnet-4-5-20250929")
+
+        prompt = f"""Analyze the birth chart for:
+- Name: {name}
+- Date of Birth: {dob}
+- Birth Time: {birth_time or 'Not provided'}
+- Birth Place: {birth_place or 'Not provided'}
+
+Provide complete Vedic astrology analysis with Nakshatra, Rashi, Grah Dosh, daily mantras, remedies, recommended pujas, gemstone, and lucky details. Respond ONLY in the JSON format specified."""
+
+        ai_response = await chat.send_message(UserMessage(text=prompt))
+
+        # Parse JSON
+        import json
+        json_str = ai_response
+        if "```json" in json_str:
+            json_str = json_str.split("```json")[1].split("```")[0]
+        elif "```" in json_str:
+            json_str = json_str.split("```")[1].split("```")[0]
+
+        chart_data = json.loads(json_str.strip())
+
+        # Save analysis
+        await db.birth_chart_analyses.insert_one({
+            "name": name, "dob": dob, "birth_time": birth_time, "birth_place": birth_place,
+            "analysis": chart_data, "ip": ip,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        })
+
+        return {"name": name, "dob": dob, "birth_time": birth_time, "birth_place": birth_place, "chart": chart_data}
+
+    except json.JSONDecodeError:
+        return {"name": name, "dob": dob, "chart": None, "raw_analysis": ai_response[:2000], "error": "Could not parse structured data"}
+    except Exception as e:
+        logger.error(f"Birth chart error: {e}")
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+# ===================== SITEMAP & SEO =====================
+
+@api_router.get("/sitemap.xml")
+async def sitemap():
+    from starlette.responses import Response as StarletteResponse
+    base_url = "https://sanatansaathi.com"
+    urls = [f"<url><loc>{base_url}/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>"]
+    urls.append(f"<url><loc>{base_url}/blog</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>")
+    urls.append(f"<url><loc>{base_url}/birth-chart</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>")
+
+    posts = await db.blog_posts.find({"status": "published"}, {"slug": 1}).to_list(500)
+    for p in posts:
+        urls.append(f"<url><loc>{base_url}/blog/{p['slug']}</loc><changefreq>monthly</changefreq><priority>0.6</priority></url>")
+
+    pages = await db.cms_pages.find({"is_active": True}, {"slug": 1}).to_list(50)
+    for p in pages:
+        urls.append(f"<url><loc>{base_url}/page/{p['slug']}</loc><changefreq>monthly</changefreq><priority>0.5</priority></url>")
+
+    xml = f'<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{"".join(urls)}</urlset>'
+    return StarletteResponse(content=xml, media_type="application/xml")
+
+# ===================== ADMIN MANAGEMENT =====================
+
+@api_router.get("/admin/admins")
+async def list_admins(admin: dict = Depends(require_role(["super_admin"]))):
+    admins = await db.admin_users.find({}, {"password_hash": 0}).to_list(100)
+    return [serialize_doc(a) for a in admins]
+
+@api_router.put("/admin/admins/{admin_id}")
+async def update_admin(admin_id: str, request: Request, admin: dict = Depends(require_role(["super_admin"]))):
+    body = await request.json()
+    update = {}
+    if "role" in body:
+        if body["role"] not in ["super_admin", "content_admin", "moderator"]:
+            raise HTTPException(status_code=400, detail="Invalid role")
+        update["role"] = body["role"]
+    if "name" in body:
+        update["name"] = body["name"]
+    if "is_active" in body:
+        update["is_active"] = body["is_active"]
+    if not update:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    await db.admin_users.update_one({"_id": ObjectId(admin_id)}, {"$set": update})
+    updated = await db.admin_users.find_one({"_id": ObjectId(admin_id)}, {"password_hash": 0})
+    return serialize_doc(updated)
+
+@api_router.delete("/admin/admins/{admin_id}")
+async def delete_admin(admin_id: str, admin: dict = Depends(require_role(["super_admin"]))):
+    if admin_id == admin["_id"]:
+        raise HTTPException(status_code=400, detail="Cannot deactivate yourself")
+    await db.admin_users.update_one({"_id": ObjectId(admin_id)}, {"$set": {"is_active": False}})
+    return {"message": "Admin deactivated"}
+
+# ===================== DASHBOARD =====================
+
+@api_router.get("/admin/dashboard")
+async def dashboard_stats(admin: dict = Depends(require_role(["super_admin", "content_admin", "moderator"]))):
+    content_count = await db.content_items.count_documents({})
+    published = await db.content_items.count_documents({"status": "published"})
+    draft = await db.content_items.count_documents({"status": "draft"})
+    katha_count = await db.katha_items.count_documents({})
+    arti_count = await db.arti_items.count_documents({})
+    granth_count = await db.granth_books.count_documents({})
+    veda_count = await db.veda_books.count_documents({})
+    user_count = await db.user_profiles.count_documents({})
+    admin_count = await db.admin_users.count_documents({"is_active": True})
+    chat_count = await db.vedachat_conversations.count_documents({})
+
+    # Category breakdown
+    categories = await db.content_items.aggregate([
+        {"$group": {"_id": "$category", "count": {"$sum": 1}}}
+    ]).to_list(20)
+
+    recent_content = await db.content_items.find({}, {"_id": 1, "title_en": 1, "category": 1, "status": 1, "created_at": 1}).sort("created_at", -1).limit(5).to_list(5)
+
+    return {
+        "total_content": content_count,
+        "published": published,
+        "draft": draft,
+        "kathas": katha_count,
+        "artis": arti_count,
+        "granths": granth_count,
+        "vedas": veda_count,
+        "users": user_count,
+        "admins": admin_count,
+        "chats": chat_count,
+        "categories": [{"name": c["_id"] or "unknown", "count": c["count"]} for c in categories],
+        "recent_content": [serialize_doc(c) for c in recent_content]
+    }
+
+# ===================== CONTENT ITEMS CRUD =====================
+
+@api_router.get("/content/items")
+async def list_content_items(category: Optional[str] = None, status: Optional[str] = None, skip: int = 0, limit: int = 50):
+    query = {}
+    if category:
+        query["category"] = category
+    if status:
+        query["status"] = status
+    items = await db.content_items.find(query, {"_id": 1, "category": 1, "slug": 1, "title_hi": 1, "title_en": 1, "deity": 1, "status": 1, "total_verses": 1, "sort_order": 1, "is_active": 1, "thumbnail_url": 1, "created_at": 1}).sort("sort_order", 1).skip(skip).limit(limit).to_list(limit)
+    total = await db.content_items.count_documents(query)
+    return {"items": [serialize_doc(i) for i in items], "total": total}
+
+@api_router.get("/content/items/{item_id}")
+async def get_content_item(item_id: str):
+    item = await db.content_items.find_one({"_id": ObjectId(item_id)})
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    return serialize_doc(item)
+
+class ContentItemCreate(BaseModel):
+    category: str
+    title_hi: str
+    title_en: str
+    deity: Optional[str] = ""
+    deity_hi: Optional[str] = ""
+    description_hi: Optional[str] = ""
+    description_en: Optional[str] = ""
+    thumbnail_url: Optional[str] = ""
+    audio_url: Optional[str] = ""
+    has_beginner_mode: bool = True
+    has_expert_mode: bool = True
+    tags: List[str] = []
+    supported_languages: List[str] = ["hi", "en", "sa"]
+    is_premium: bool = False
+
+@api_router.post("/content/items")
+async def create_content_item(req: ContentItemCreate, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    slug = req.title_en.lower().replace(" ", "-").replace("'", "")
+    doc = {
+        **req.model_dump(),
+        "slug": slug,
+        "total_verses": 0,
+        "sort_order": 0,
+        "is_active": True,
+        "like_count": 0,
+        "status": "draft",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "created_by": admin["_id"]
+    }
+    result = await db.content_items.insert_one(doc)
+    doc["_id"] = str(result.inserted_id)
+    return doc
+
+@api_router.put("/content/items/{item_id}")
+async def update_content_item(item_id: str, request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    body = await request.json()
+    body.pop("_id", None)
+    body["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.content_items.update_one({"_id": ObjectId(item_id)}, {"$set": body})
+    updated = await db.content_items.find_one({"_id": ObjectId(item_id)})
+    return serialize_doc(updated)
+
+@api_router.delete("/content/items/{item_id}")
+async def delete_content_item(item_id: str, admin: dict = Depends(require_role(["super_admin"]))):
+    await db.content_items.delete_one({"_id": ObjectId(item_id)})
+    await db.content_verses.delete_many({"item_id": item_id})
+    return {"message": "Deleted"}
+
+@api_router.patch("/content/items/{item_id}/status")
+async def update_item_status(item_id: str, request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    body = await request.json()
+    status = body.get("status")
+    if status not in ["draft", "published", "archived"]:
+        raise HTTPException(status_code=400, detail="Invalid status")
+    await db.content_items.update_one({"_id": ObjectId(item_id)}, {"$set": {"status": status, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    return {"message": f"Status updated to {status}"}
+
+# ===================== CONTENT VERSES =====================
+
+@api_router.get("/content/items/{item_id}/verses")
+async def get_verses(item_id: str):
+    verses = await db.content_verses.find({"item_id": item_id}).sort("sort_order", 1).to_list(1000)
+    return [serialize_doc(v) for v in verses]
+
+class VerseCreate(BaseModel):
+    verse_num: int
+    verse_type: str = "shloka"
+    sanskrit_text: str
+    transliteration: str = ""
+    audio_url: Optional[str] = ""
+
+@api_router.post("/content/items/{item_id}/verses")
+async def create_verse(item_id: str, req: VerseCreate, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    doc = {
+        **req.model_dump(),
+        "item_id": item_id,
+        "sort_order": req.verse_num,
+        "is_active": True,
+        "audio_start_ms": 0,
+        "audio_end_ms": 0
+    }
+    result = await db.content_verses.insert_one(doc)
+    doc["_id"] = str(result.inserted_id)
+    await db.content_items.update_one({"_id": ObjectId(item_id)}, {"$inc": {"total_verses": 1}})
+    return doc
+
+@api_router.put("/content/verses/{verse_id}")
+async def update_verse(verse_id: str, request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    body = await request.json()
+    body.pop("_id", None)
+    await db.content_verses.update_one({"_id": ObjectId(verse_id)}, {"$set": body})
+    updated = await db.content_verses.find_one({"_id": ObjectId(verse_id)})
+    return serialize_doc(updated)
+
+@api_router.get("/content/verses/{verse_id}/meanings")
+async def get_verse_meanings(verse_id: str):
+    meanings = await db.verse_meanings.find({"verse_id": verse_id}).to_list(20)
+    return [serialize_doc(m) for m in meanings]
+
+class MeaningCreate(BaseModel):
+    language: str
+    meaning: str
+    word_breakdown: List[Dict[str, str]] = []
+
+@api_router.post("/content/verses/{verse_id}/meanings")
+async def create_meaning(verse_id: str, req: MeaningCreate, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    existing = await db.verse_meanings.find_one({"verse_id": verse_id, "language": req.language})
+    if existing:
+        await db.verse_meanings.update_one({"_id": existing["_id"]}, {"$set": req.model_dump()})
+        updated = await db.verse_meanings.find_one({"_id": existing["_id"]})
+        return serialize_doc(updated)
+    doc = {**req.model_dump(), "verse_id": verse_id}
+    result = await db.verse_meanings.insert_one(doc)
+    doc["_id"] = str(result.inserted_id)
+    return doc
+
+# ===================== KATHA =====================
+
+@api_router.get("/katha/items")
+async def list_kathas():
+    items = await db.katha_items.find({}).sort("sort_order", 1).to_list(100)
+    return [serialize_doc(i) for i in items]
+
+@api_router.get("/katha/items/{katha_id}")
+async def get_katha(katha_id: str):
+    item = await db.katha_items.find_one({"_id": ObjectId(katha_id)})
+    if not item:
+        raise HTTPException(status_code=404, detail="Katha not found")
+    return serialize_doc(item)
+
+@api_router.post("/katha/items")
+async def create_katha(request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    body = await request.json()
+    body["sort_order"] = body.get("sort_order", 0)
+    body["is_active"] = True
+    body["status"] = "draft"
+    body["created_at"] = datetime.now(timezone.utc).isoformat()
+    result = await db.katha_items.insert_one(body)
+    body["_id"] = str(result.inserted_id)
+    return body
+
+@api_router.put("/katha/items/{katha_id}")
+async def update_katha(katha_id: str, request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    body = await request.json()
+    body.pop("_id", None)
+    await db.katha_items.update_one({"_id": ObjectId(katha_id)}, {"$set": body})
+    updated = await db.katha_items.find_one({"_id": ObjectId(katha_id)})
+    return serialize_doc(updated)
+
+# ===================== ARTI =====================
+
+@api_router.get("/arti/items")
+async def list_artis():
+    items = await db.arti_items.find({}).sort("sort_order", 1).to_list(100)
+    return [serialize_doc(i) for i in items]
+
+@api_router.get("/arti/items/{arti_id}")
+async def get_arti(arti_id: str):
+    item = await db.arti_items.find_one({"_id": ObjectId(arti_id)})
+    if not item:
+        raise HTTPException(status_code=404, detail="Arti not found")
+    lines = await db.arti_lines.find({"arti_id": arti_id}).sort("line_num", 1).to_list(200)
+    result = serialize_doc(item)
+    result["lines"] = [serialize_doc(l) for l in lines]
+    return result
+
+@api_router.post("/arti/items")
+async def create_arti(request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    body = await request.json()
+    body["sort_order"] = body.get("sort_order", 0)
+    body["is_active"] = True
+    body["status"] = "published"
+    result = await db.arti_items.insert_one(body)
+    body["_id"] = str(result.inserted_id)
+    return body
+
+# ===================== BHAKTI CONTENT MANAGER =====================
+
+# Unified Bhakti content categories: aarti, chalisa, namavali, sahasranama, vedic_mantra, stotram, suktam, ashtakam, shatkam, kavacham, nam_ramayanam
+
+BHAKTI_CATEGORIES = [
+    "aarti", "chalisa", "namavali", "sahasranama", "vedic_mantra",
+    "stotram", "suktam", "ashtakam", "shatkam", "kavacham", "nam_ramayanam"
+]
+
+@api_router.get("/bhakti/items")
+async def list_bhakti_items(
+    category: Optional[str] = None,
+    subcategory: Optional[str] = None,
+    status: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 100
+):
+    query = {}
+    if category:
+        query["category"] = category
+    if subcategory:
+        query["subcategory"] = subcategory
+    if status:
+        query["status"] = status
     
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    # Check bhakti_items collection first, then fallback to content_items
+    items = await db.bhakti_items.find(query).sort("sort_order", 1).skip(skip).limit(limit).to_list(limit)
+    total = await db.bhakti_items.count_documents(query)
+    
+    # If no items in bhakti_items, check content_items with same category filter
+    if not items and category in BHAKTI_CATEGORIES:
+        items = await db.content_items.find(query).sort("sort_order", 1).skip(skip).limit(limit).to_list(limit)
+        total = await db.content_items.count_documents(query)
+    
+    return {
+        "items": [serialize_doc(i) for i in items],
+        "total": total,
+        "skip": skip,
+        "limit": limit
+    }
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
+@api_router.get("/bhakti/items/{item_id}")
+async def get_bhakti_item(item_id: str):
+    # Try bhakti_items first
+    item = await db.bhakti_items.find_one({"_id": ObjectId(item_id)})
+    if not item:
+        # Fallback to content_items
+        item = await db.content_items.find_one({"_id": ObjectId(item_id)})
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    
+    result = serialize_doc(item)
+    
+    # Get verses if they exist
+    verses = await db.bhakti_verses.find({"item_id": item_id}).sort("verse_num", 1).to_list(1000)
+    if verses:
+        result["verses"] = [serialize_doc(v) for v in verses]
+    else:
+        # Try content_verses
+        verses = await db.content_verses.find({"item_id": item_id}).sort("verse_num", 1).to_list(1000)
+        if verses:
+            result["verses"] = [serialize_doc(v) for v in verses]
+    
+    return result
 
-# Add your routes to the router instead of directly to app
+@api_router.post("/bhakti/items")
+async def create_bhakti_item(request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    body = await request.json()
+    body = sanitize_dict(body)
+    
+    category = body.get("category", "")
+    if category not in BHAKTI_CATEGORIES:
+        raise HTTPException(status_code=400, detail=f"Invalid category. Must be one of: {', '.join(BHAKTI_CATEGORIES)}")
+    
+    # Generate slug
+    title_en = body.get("title_en", "")
+    slug_base = title_en.lower().replace(" ", "-").replace("'", "")
+    slug = re.sub(r'[^a-z0-9-]', '', slug_base)
+    
+    # Check for unique slug
+    existing = await db.bhakti_items.find_one({"slug": slug})
+    if existing:
+        slug = f"{slug}-{uuid.uuid4().hex[:6]}"
+    
+    doc = {
+        "category": category,
+        "subcategory": body.get("subcategory", ""),
+        "slug": slug,
+        "title_hi": body.get("title_hi", ""),
+        "title_en": title_en,
+        "deity": body.get("deity", ""),
+        "deity_hi": body.get("deity_hi", ""),
+        "description_hi": body.get("description_hi", ""),
+        "description_en": body.get("description_en", ""),
+        "thumbnail_url": body.get("thumbnail_url", ""),
+        "audio_url": body.get("audio_url", ""),
+        "video_url": body.get("video_url", ""),
+        "music_type": body.get("music_type", ""),
+        "best_occasion": body.get("best_occasion", ""),
+        "full_text": body.get("full_text", ""),
+        "has_beginner_mode": body.get("has_beginner_mode", True),
+        "has_expert_mode": body.get("has_expert_mode", True),
+        "total_verses": len(body.get("verses", [])),
+        "sort_order": body.get("sort_order", 0),
+        "is_active": True,
+        "is_premium": body.get("is_premium", False),
+        "tags": body.get("tags", []),
+        "supported_languages": body.get("supported_languages", ["hi", "en", "sa"]),
+        "audio_timestamps": body.get("audio_timestamps", []),
+        "like_count": 0,
+        "status": "draft",
+        "created_by": admin.get("admin_id"),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    result = await db.bhakti_items.insert_one(doc)
+    item_id = str(result.inserted_id)
+    doc["_id"] = item_id
+    
+    # Insert verses if provided
+    verses = body.get("verses", [])
+    if verses:
+        for i, verse in enumerate(verses):
+            verse_doc = {
+                "item_id": item_id,
+                "verse_num": verse.get("verse_num", i + 1),
+                "verse_type": verse.get("verse_type", "shloka"),
+                "sanskrit_text": verse.get("sanskrit_text", ""),
+                "transliteration": verse.get("transliteration", ""),
+                "meanings": verse.get("meanings", {}),
+                "word_breakdown": verse.get("word_breakdown", []),
+                "audio_start_ms": verse.get("audio_start_ms", 0),
+                "audio_end_ms": verse.get("audio_end_ms", 0),
+                "is_active": True
+            }
+            await db.bhakti_verses.insert_one(verse_doc)
+    
+    await log_audit("bhakti_item_created", admin.get("admin_id"), admin.get("email"), {"item_id": item_id, "category": category, "title": title_en})
+    return doc
+
+@api_router.put("/bhakti/items/{item_id}")
+async def update_bhakti_item(item_id: str, request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    body = await request.json()
+    body = sanitize_dict(body)
+    body.pop("_id", None)
+    body.pop("created_at", None)
+    body.pop("created_by", None)
+    body["updated_at"] = datetime.now(timezone.utc).isoformat()
+    
+    # Update verses if provided
+    verses = body.pop("verses", None)
+    if verses is not None:
+        # Delete existing verses and re-insert
+        await db.bhakti_verses.delete_many({"item_id": item_id})
+        for i, verse in enumerate(verses):
+            verse_doc = {
+                "item_id": item_id,
+                "verse_num": verse.get("verse_num", i + 1),
+                "verse_type": verse.get("verse_type", "shloka"),
+                "sanskrit_text": verse.get("sanskrit_text", ""),
+                "transliteration": verse.get("transliteration", ""),
+                "meanings": verse.get("meanings", {}),
+                "word_breakdown": verse.get("word_breakdown", []),
+                "audio_start_ms": verse.get("audio_start_ms", 0),
+                "audio_end_ms": verse.get("audio_end_ms", 0),
+                "is_active": True
+            }
+            await db.bhakti_verses.insert_one(verse_doc)
+        body["total_verses"] = len(verses)
+    
+    await db.bhakti_items.update_one({"_id": ObjectId(item_id)}, {"$set": body})
+    updated = await db.bhakti_items.find_one({"_id": ObjectId(item_id)})
+    if not updated:
+        raise HTTPException(status_code=404, detail="Item not found")
+    
+    await log_audit("bhakti_item_updated", admin.get("admin_id"), admin.get("email"), {"item_id": item_id})
+    return serialize_doc(updated)
+
+@api_router.patch("/bhakti/items/{item_id}/status")
+async def update_bhakti_status(item_id: str, request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    body = await request.json()
+    new_status = body.get("status")
+    if new_status not in ["draft", "published", "archived"]:
+        raise HTTPException(status_code=400, detail="Invalid status")
+    
+    await db.bhakti_items.update_one(
+        {"_id": ObjectId(item_id)},
+        {"$set": {"status": new_status, "updated_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    
+    await log_audit("bhakti_status_changed", admin.get("admin_id"), admin.get("email"), {"item_id": item_id, "new_status": new_status})
+    return {"success": True, "status": new_status}
+
+@api_router.delete("/bhakti/items/{item_id}")
+async def delete_bhakti_item(item_id: str, admin: dict = Depends(require_role(["super_admin"]))):
+    # Delete item and its verses
+    result = await db.bhakti_items.delete_one({"_id": ObjectId(item_id)})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Item not found")
+    
+    await db.bhakti_verses.delete_many({"item_id": item_id})
+    await log_audit("bhakti_item_deleted", admin.get("admin_id"), admin.get("email"), {"item_id": item_id})
+    return {"success": True}
+
+@api_router.post("/bhakti/bulk-delete")
+async def bulk_delete_bhakti(request: Request, admin: dict = Depends(require_role(["super_admin"]))):
+    body = await request.json()
+    ids = body.get("ids", [])
+    if not ids:
+        raise HTTPException(status_code=400, detail="No IDs provided")
+    
+    object_ids = [ObjectId(id) for id in ids]
+    result = await db.bhakti_items.delete_many({"_id": {"$in": object_ids}})
+    await db.bhakti_verses.delete_many({"item_id": {"$in": ids}})
+    
+    await log_audit("bhakti_bulk_delete", admin.get("admin_id"), admin.get("email"), {"count": result.deleted_count})
+    return {"success": True, "deleted_count": result.deleted_count}
+
+@api_router.post("/bhakti/bulk-export")
+async def bulk_export_bhakti(request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    body = await request.json()
+    ids = body.get("ids", [])
+    if not ids:
+        raise HTTPException(status_code=400, detail="No IDs provided")
+    
+    object_ids = [ObjectId(id) for id in ids]
+    items = await db.bhakti_items.find({"_id": {"$in": object_ids}}).to_list(1000)
+    
+    export_data = []
+    for item in items:
+        item_data = serialize_doc(item)
+        verses = await db.bhakti_verses.find({"item_id": str(item["_id"])}).sort("verse_num", 1).to_list(1000)
+        item_data["verses"] = [serialize_doc(v) for v in verses]
+        export_data.append(item_data)
+    
+    return export_data
+
+@api_router.post("/bhakti/bulk-tts")
+async def bulk_generate_tts(request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    body = await request.json()
+    ids = body.get("ids", [])
+    category = body.get("category", "")
+    
+    if not ids:
+        raise HTTPException(status_code=400, detail="No IDs provided")
+    
+    # Queue TTS generation (in production, this would trigger a background job)
+    job_id = str(uuid.uuid4())
+    await db.tts_jobs.insert_one({
+        "job_id": job_id,
+        "item_ids": ids,
+        "category": category,
+        "status": "queued",
+        "created_by": admin.get("admin_id"),
+        "created_at": datetime.now(timezone.utc).isoformat()
+    })
+    
+    await log_audit("tts_generation_queued", admin.get("admin_id"), admin.get("email"), {"job_id": job_id, "item_count": len(ids)})
+    return {"success": True, "job_id": job_id, "message": "TTS generation queued"}
+
+# ===================== GRANTH =====================
+
+@api_router.get("/granth/books")
+async def list_granth_books():
+    books = await db.granth_books.find({}).sort("sort_order", 1).to_list(20)
+    return [serialize_doc(b) for b in books]
+
+@api_router.get("/granth/books/{book_id}")
+async def get_granth_book(book_id: str):
+    book = await db.granth_books.find_one({"_id": ObjectId(book_id)})
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    chapters = await db.granth_chapters.find({"book_id": book_id}).sort("sort_order", 1).to_list(100)
+    result = serialize_doc(book)
+    result["chapters"] = [serialize_doc(c) for c in chapters]
+    return result
+
+@api_router.get("/granth/chapters/{chapter_id}/verses")
+async def get_granth_verses(chapter_id: str, skip: int = 0, limit: int = 50):
+    verses = await db.granth_verses.find({"chapter_id": chapter_id}).sort("sort_order", 1).skip(skip).limit(limit).to_list(limit)
+    return [serialize_doc(v) for v in verses]
+
+# ===================== VEDAS =====================
+
+@api_router.get("/vedas/books")
+async def list_veda_books():
+    books = await db.veda_books.find({}).sort("sort_order", 1).to_list(20)
+    return [serialize_doc(b) for b in books]
+
+@api_router.get("/vedas/books/{book_id}")
+async def get_veda_book(book_id: str):
+    book = await db.veda_books.find_one({"_id": ObjectId(book_id)})
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    chapters = await db.veda_chapters.find({"book_id": book_id}).sort("sort_order", 1).to_list(100)
+    result = serialize_doc(book)
+    result["chapters"] = [serialize_doc(c) for c in chapters]
+    return result
+
+# ===================== PANCHANG =====================
+
+@api_router.get("/admin/panchang")
+async def list_panchang(admin: dict = Depends(require_role(["super_admin", "content_admin", "moderator"]))):
+    items = await db.panchang.find({}).sort("date", -1).to_list(100)
+    return [serialize_doc(i) for i in items]
+
+@api_router.post("/admin/panchang")
+async def create_panchang(request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    body = await request.json()
+    body["created_at"] = datetime.now(timezone.utc).isoformat()
+    result = await db.panchang.insert_one(body)
+    body["_id"] = str(result.inserted_id)
+    return body
+
+@api_router.put("/admin/panchang/{panchang_id}")
+async def update_panchang(panchang_id: str, request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    body = await request.json()
+    body.pop("_id", None)
+    await db.panchang.update_one({"_id": ObjectId(panchang_id)}, {"$set": body})
+    updated = await db.panchang.find_one({"_id": ObjectId(panchang_id)})
+    return serialize_doc(updated)
+
+# ===================== VEDACHAT AI =====================
+
+@api_router.post("/vedachat/message")
+async def vedachat_message(request: Request):
+    admin = await get_current_admin(request)
+    body = await request.json()
+    message_text = body.get("message", "")
+    conversation_id = body.get("conversation_id")
+
+    if not message_text:
+        raise HTTPException(status_code=400, detail="Message is required")
+
+    # Get or create conversation
+    if conversation_id:
+        conv = await db.vedachat_conversations.find_one({"_id": ObjectId(conversation_id)})
+        if not conv:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        messages = conv.get("messages", [])
+    else:
+        messages = []
+        conv = None
+
+    # Add user message
+    user_msg = {
+        "role": "user",
+        "content": message_text,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    messages.append(user_msg)
+
+    # Call Claude via emergentintegrations
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+
+        session_id = conversation_id or str(uuid.uuid4())
+        chat = LlmChat(
+            api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
+            session_id=f"vedachat-{session_id}",
+            system_message="""You are VedaChat, a knowledgeable spiritual guide for Sanatan Dharma. You answer questions about Hindu scriptures, philosophy, rituals, and spiritual practices.
+
+Guidelines:
+- Always cite specific scripture references when possible (e.g., Bhagavad Gita Chapter 2, Verse 47)
+- Respond with respect and depth befitting spiritual texts
+- Provide answers in the language the user asks in (Hindi or English)
+- Include Sanskrit shlokas when relevant with their translations
+- Be helpful for both beginners and advanced practitioners
+- Cover topics from Vedas, Upanishads, Bhagavad Gita, Ramayana, Mahabharata, Puranas"""
+        )
+        chat.with_model("anthropic", "claude-sonnet-4-5-20250929")
+
+        # Load conversation history into chat
+        for msg in messages[:-1]:
+            if msg["role"] == "user":
+                await chat.send_message(UserMessage(text=msg["content"]))
+
+        ai_response = await chat.send_message(UserMessage(text=message_text))
+
+        assistant_msg = {
+            "role": "assistant",
+            "content": ai_response,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        messages.append(assistant_msg)
+
+    except Exception as e:
+        logger.error(f"VedaChat AI error: {e}")
+        assistant_msg = {
+            "role": "assistant",
+            "content": "I apologize, but I'm unable to process your question right now. Please try again later.",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        messages.append(assistant_msg)
+
+    # Save conversation
+    if conv:
+        await db.vedachat_conversations.update_one(
+            {"_id": ObjectId(conversation_id)},
+            {"$set": {"messages": messages, "last_message_at": datetime.now(timezone.utc).isoformat()}}
+        )
+        return {"conversation_id": conversation_id, "response": assistant_msg}
+    else:
+        new_conv = {
+            "user_id": admin["_id"],
+            "messages": messages,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "last_message_at": datetime.now(timezone.utc).isoformat()
+        }
+        result = await db.vedachat_conversations.insert_one(new_conv)
+        return {"conversation_id": str(result.inserted_id), "response": assistant_msg}
+
+@api_router.get("/vedachat/conversations")
+async def list_conversations(request: Request):
+    admin = await get_current_admin(request)
+    convs = await db.vedachat_conversations.find({"user_id": admin["_id"]}).sort("last_message_at", -1).to_list(50)
+    result = []
+    for c in convs:
+        doc = serialize_doc(c)
+        doc["preview"] = c["messages"][0]["content"][:100] if c.get("messages") else ""
+        doc["message_count"] = len(c.get("messages", []))
+        result.append(doc)
+    return result
+
+@api_router.get("/vedachat/conversations/{conv_id}")
+async def get_conversation(conv_id: str, request: Request):
+    await get_current_admin(request)
+    conv = await db.vedachat_conversations.find_one({"_id": ObjectId(conv_id)})
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return serialize_doc(conv)
+
+@api_router.delete("/vedachat/conversations/{conv_id}")
+async def delete_conversation(conv_id: str, request: Request):
+    await get_current_admin(request)
+    await db.vedachat_conversations.delete_one({"_id": ObjectId(conv_id)})
+    return {"message": "Conversation deleted"}
+
+# ===================== HOME / DISCOVERY =====================
+
+@api_router.get("/home/today")
+async def home_today():
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    panchang = await db.panchang.find_one({"date": today})
+    daily_shloka = await db.content_items.find_one({"status": "published"}, sort=[("sort_order", 1)])
+    return {
+        "greeting": "Om Namah Shivaya",
+        "panchang": serialize_doc(panchang) if panchang else None,
+        "daily_shloka": serialize_doc(daily_shloka) if daily_shloka else None,
+        "date": today
+    }
+
+@api_router.get("/home/categories")
+async def home_categories():
+    return [
+        {"key": "vedic_mantra", "title_hi": "वैदिक मंत्र", "title_en": "Vedic Mantras", "icon": "om"},
+        {"key": "chalisa", "title_hi": "चालीसा", "title_en": "Chalisa", "icon": "book-open"},
+        {"key": "ashtakam", "title_hi": "अष्टकम्", "title_en": "Ashtakam", "icon": "scroll"},
+        {"key": "sahasranama", "title_hi": "सहस्रनाम", "title_en": "Sahasranama", "icon": "list"},
+        {"key": "katha", "title_hi": "कथा एवं पूजा", "title_en": "Katha & Puja", "icon": "flame"},
+        {"key": "arti", "title_hi": "आरती संग्रह", "title_en": "Arti Sangrah", "icon": "music"},
+        {"key": "nama_ramayanam", "title_hi": "नाम रामायणम्", "title_en": "Nama Ramayanam", "icon": "heart"},
+        {"key": "granth", "title_hi": "दिव्य ग्रंथ", "title_en": "Divya Granth", "icon": "library"}
+    ]
+
+@api_router.get("/search")
+async def search_content(q: str = ""):
+    if not q or len(q) < 2:
+        return []
+    regex = {"$regex": q, "$options": "i"}
+    items = await db.content_items.find({"$or": [{"title_hi": regex}, {"title_en": regex}, {"deity": regex}]}).limit(20).to_list(20)
+    return [serialize_doc(i) for i in items]
+
+# ===================== APP SETTINGS =====================
+
+@api_router.get("/admin/settings")
+async def get_settings(admin: dict = Depends(require_role(["super_admin"]))):
+    settings = await db.app_settings.find({}).to_list(50)
+    return [serialize_doc(s) for s in settings]
+
+@api_router.put("/admin/settings/{key}")
+async def update_setting(key: str, request: Request, admin: dict = Depends(require_role(["super_admin"]))):
+    body = await request.json()
+    await db.app_settings.update_one(
+        {"key": key},
+        {"$set": {"value": body.get("value"), "is_active": body.get("is_active", True), "updated_at": datetime.now(timezone.utc).isoformat(), "updated_by": admin["_id"]}},
+        upsert=True
+    )
+    return {"message": "Setting updated"}
+
+# ===================== USERS (App Users) =====================
+
+@api_router.get("/admin/users")
+async def list_users(admin: dict = Depends(require_role(["super_admin", "content_admin"])), skip: int = 0, limit: int = 50):
+    users = await db.user_profiles.find({}).skip(skip).limit(limit).to_list(limit)
+    total = await db.user_profiles.count_documents({})
+    return {"users": [serialize_doc(u) for u in users], "total": total}
+
+# ===================== DAILY SHLOKA SCHEDULER =====================
+
+@api_router.get("/admin/daily-schedule")
+async def list_daily_schedules(admin: dict = Depends(require_role(["super_admin", "content_admin", "moderator"]))):
+    schedules = await db.daily_schedules.find({}).sort("date", -1).to_list(200)
+    result = []
+    for s in schedules:
+        doc = serialize_doc(s)
+        if s.get("content_id"):
+            item = await db.content_items.find_one({"_id": ObjectId(s["content_id"])}, {"title_en": 1, "title_hi": 1, "category": 1})
+            doc["content_item"] = serialize_doc(item) if item else None
+        result.append(doc)
+    return result
+
+@api_router.post("/admin/daily-schedule")
+async def create_daily_schedule(request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    body = await request.json()
+    body["created_at"] = datetime.now(timezone.utc).isoformat()
+    body["created_by"] = admin["_id"]
+    result = await db.daily_schedules.insert_one(body)
+    body["_id"] = str(result.inserted_id)
+    return body
+
+@api_router.put("/admin/daily-schedule/{schedule_id}")
+async def update_daily_schedule(schedule_id: str, request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    body = await request.json()
+    body.pop("_id", None)
+    body.pop("content_item", None)
+    await db.daily_schedules.update_one({"_id": ObjectId(schedule_id)}, {"$set": body})
+    updated = await db.daily_schedules.find_one({"_id": ObjectId(schedule_id)})
+    return serialize_doc(updated)
+
+@api_router.delete("/admin/daily-schedule/{schedule_id}")
+async def delete_daily_schedule(schedule_id: str, admin: dict = Depends(require_role(["super_admin"]))):
+    await db.daily_schedules.delete_one({"_id": ObjectId(schedule_id)})
+    return {"message": "Deleted"}
+
+# Enhanced Home API with daily schedule, vrat, festival, nakshatra content
+@api_router.get("/home/daily")
+async def home_daily():
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    day_of_week = datetime.now(timezone.utc).strftime("%A").lower()
+
+    # Get panchang for today
+    panchang = await db.panchang.find_one({"date": today})
+
+    # Get daily scheduled shloka (date-specific first, then day-of-week)
+    daily_schedule = await db.daily_schedules.find_one({"date": today, "is_active": True})
+    if not daily_schedule:
+        daily_schedule = await db.daily_schedules.find_one({"day_of_week": day_of_week, "schedule_type": "recurring", "is_active": True})
+
+    daily_shloka = None
+    if daily_schedule and daily_schedule.get("content_id"):
+        daily_shloka = await db.content_items.find_one({"_id": ObjectId(daily_schedule["content_id"])})
+        if daily_shloka:
+            daily_shloka = serialize_doc(daily_shloka)
+
+    if not daily_shloka:
+        daily_shloka_doc = await db.content_items.find_one({"status": "published"}, sort=[("sort_order", 1)])
+        if daily_shloka_doc:
+            daily_shloka = serialize_doc(daily_shloka_doc)
+
+    # Get vrat/festival info from panchang
+    vrat_info = None
+    festival_info = None
+    nakshatra_content = []
+    if panchang:
+        if panchang.get("vrat_name"):
+            vrat_info = {"name_hi": panchang.get("vrat_name", ""), "name_en": panchang.get("vrat_name_en", ""), "description": panchang.get("vrat_description", "")}
+        if panchang.get("festival_name"):
+            festival_info = {"name_hi": panchang.get("festival_name", ""), "name_en": panchang.get("festival_name_en", ""), "description": panchang.get("festival_description", "")}
+        # Nakshatra-based content
+        if panchang.get("nakshatra"):
+            nakshatra_items = await db.content_items.find({"tags": {"$regex": panchang["nakshatra"], "$options": "i"}, "status": "published"}).limit(3).to_list(3)
+            nakshatra_content = [serialize_doc(i) for i in nakshatra_items]
+
+    # Linked content from panchang
+    linked_content = []
+    if panchang and panchang.get("linked_content_ids"):
+        for cid in panchang["linked_content_ids"]:
+            try:
+                item = await db.content_items.find_one({"_id": ObjectId(cid)})
+                if item:
+                    linked_content.append(serialize_doc(item))
+            except Exception:
+                pass
+
+    return {
+        "date": today,
+        "day_of_week": day_of_week,
+        "greeting": "ॐ नमः शिवाय",
+        "panchang": serialize_doc(panchang) if panchang else None,
+        "daily_shloka": daily_shloka,
+        "vrat": vrat_info,
+        "festival": festival_info,
+        "nakshatra_content": nakshatra_content,
+        "linked_content": linked_content,
+    }
+
+# ===================== VRAT & FESTIVAL MANAGEMENT =====================
+
+@api_router.get("/admin/vrat-festivals")
+async def list_vrat_festivals(admin: dict = Depends(require_role(["super_admin", "content_admin", "moderator"]))):
+    items = await db.vrat_festivals.find({}).sort("date", 1).to_list(200)
+    return [serialize_doc(i) for i in items]
+
+@api_router.post("/admin/vrat-festivals")
+async def create_vrat_festival(request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    body = await request.json()
+    body["created_at"] = datetime.now(timezone.utc).isoformat()
+    result = await db.vrat_festivals.insert_one(body)
+    body["_id"] = str(result.inserted_id)
+    return body
+
+@api_router.put("/admin/vrat-festivals/{item_id}")
+async def update_vrat_festival(item_id: str, request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    body = await request.json()
+    body.pop("_id", None)
+    await db.vrat_festivals.update_one({"_id": ObjectId(item_id)}, {"$set": body})
+    updated = await db.vrat_festivals.find_one({"_id": ObjectId(item_id)})
+    return serialize_doc(updated)
+
+@api_router.delete("/admin/vrat-festivals/{item_id}")
+async def delete_vrat_festival(item_id: str, admin: dict = Depends(require_role(["super_admin"]))):
+    await db.vrat_festivals.delete_one({"_id": ObjectId(item_id)})
+    return {"message": "Deleted"}
+
+# ===================== DOCX UPLOAD + CLAUDE PARSING =====================
+
+@api_router.post("/admin/upload/docx")
+async def upload_docx(file: UploadFile = File(...), category: str = Form("chalisa"), admin: dict = Depends(require_role(["super_admin", "content_admin", "moderator"]))):
+    if not file.filename.endswith(('.docx', '.DOCX')):
+        raise HTTPException(status_code=400, detail="Only DOCX files are supported")
+
+    content = await file.read()
+
+    # Save upload log
+    upload_log = {
+        "admin_id": admin["_id"],
+        "file_name": file.filename,
+        "file_type": "docx",
+        "category": category,
+        "status": "parsing",
+        "parsed_items_count": 0,
+        "error_message": None,
+        "parsed_data": None,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    log_result = await db.upload_logs.insert_one(upload_log)
+    upload_id = str(log_result.inserted_id)
+
+    # Extract text from DOCX with enhanced special character handling
+    try:
+        import io
+        from docx import Document
+        doc = Document(io.BytesIO(content))
+
+        raw_text = ""
+        for para in doc.paragraphs:
+            style = para.style.name if para.style else "Normal"
+            text = para.text  # Preserve original text with all special chars
+            if not text.strip():
+                raw_text += "\n"  # Preserve empty lines for verse separation
+                continue
+            is_bold = any(run.bold for run in para.runs if run.bold)
+            is_italic = any(run.italic for run in para.runs if run.italic)
+            # Detect Devanagari script
+            devanagari_count = sum(1 for c in text if '\u0900' <= c <= '\u097F')
+            has_devanagari = devanagari_count > len(text.strip()) * 0.3
+            if "Heading 1" in style:
+                raw_text += f"\n[H1] {text}\n"
+            elif "Heading 2" in style:
+                raw_text += f"\n[H2] {text}\n"
+            elif "Heading 3" in style:
+                raw_text += f"\n[H3] {text}\n"
+            elif is_bold and has_devanagari:
+                raw_text += f"[SANSKRIT] {text}\n"
+            elif is_bold:
+                raw_text += f"[BOLD] {text}\n"
+            elif is_italic:
+                raw_text += f"[TRANSLIT] {text}\n"
+            else:
+                raw_text += f"{text}\n"
+
+        # Parse with Claude AI - Enhanced prompt for content integrity
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+
+        chat = LlmChat(
+            api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
+            session_id=f"docx-parse-{upload_id}",
+            system_message="""You are a Hindu scripture content parser. Parse the uploaded text into structured JSON.
+
+Rules:
+- [H1] = Category name
+- [H2] = Item title (extract Hindi and English names)
+- [H3] = Section type (Doha, Chaupai, Shloka, etc.)
+- [SANSKRIT] = Sanskrit/Hindi verse text - preserve ALL special characters (anusvara, visarga, chandrabindu, halant)
+- [BOLD] = Section header or emphasis
+- [TRANSLIT] = Transliteration
+- Normal text after verse = Hindi meaning
+
+CRITICAL RULES:
+1. Preserve 100% of text. NEVER truncate. NEVER use "..." or "names continue" placeholders.
+2. For Namavali, include ALL 108 or 1008 names - every single one.
+3. Preserve line breaks within verses using \\n character.
+4. Preserve all diacritical marks and special Unicode characters.
+5. Sanskrit special chars to preserve: anusvara (ं), visarga (ः), chandrabindu (ँ), halant (्), nukta (़)
+
+Return ONLY valid JSON array:
+[{
+  "title_hi": "हनुमान चालीसा",
+  "title_en": "Hanuman Chalisa",
+  "deity": "Hanuman",
+  "deity_hi": "हनुमान",
+  "description_en": "brief description",
+  "description_hi": "brief description in Hindi",
+  "verses": [{
+    "verse_num": 1,
+    "verse_type": "doha|chaupai|shloka|mantra|stanza|name",
+    "sanskrit_text": "COMPLETE verse text with \\n for line breaks",
+    "transliteration": "transliteration if available",
+    "meaning_hi": "Hindi meaning if available",
+    "meaning_en": "English meaning if available"
+  }]
+}]"""
+        )
+        chat.with_model("anthropic", "claude-sonnet-4-5-20250929")
+
+        ai_response = await chat.send_message(UserMessage(text=f"Parse this scripture content for category '{category}':\n\n{raw_text}"))
+
+        # Extract JSON from response
+        import json
+        json_str = ai_response
+        if "```json" in json_str:
+            json_str = json_str.split("```json")[1].split("```")[0]
+        elif "```" in json_str:
+            json_str = json_str.split("```")[1].split("```")[0]
+
+        parsed_data = json.loads(json_str.strip())
+
+        await db.upload_logs.update_one(
+            {"_id": ObjectId(upload_id)},
+            {"$set": {"status": "parsed", "parsed_data": parsed_data, "parsed_items_count": len(parsed_data)}}
+        )
+
+        return {"upload_id": upload_id, "status": "parsed", "items_count": len(parsed_data), "parsed_data": parsed_data}
+
+    except json.JSONDecodeError as e:
+        await db.upload_logs.update_one(
+            {"_id": ObjectId(upload_id)},
+            {"$set": {"status": "error", "error_message": f"AI parsing returned invalid JSON: {str(e)}"}}
+        )
+        return {"upload_id": upload_id, "status": "error", "error": f"JSON parse error: {str(e)}", "raw_response": ai_response[:500] if 'ai_response' in dir() else ""}
+    except Exception as e:
+        logger.error(f"DOCX parsing error: {e}")
+        await db.upload_logs.update_one(
+            {"_id": ObjectId(upload_id)},
+            {"$set": {"status": "error", "error_message": str(e)}}
+        )
+        raise HTTPException(status_code=500, detail=f"Parsing failed: {str(e)}")
+
+@api_router.post("/admin/upload/publish/{upload_id}")
+async def publish_upload(upload_id: str, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    upload = await db.upload_logs.find_one({"_id": ObjectId(upload_id)})
+    if not upload:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    if upload["status"] != "parsed":
+        raise HTTPException(status_code=400, detail="Upload not parsed yet")
+
+    parsed_data = upload.get("parsed_data", [])
+    category = upload.get("category", "chalisa")
+    published_count = 0
+
+    for item_data in parsed_data:
+        slug = item_data.get("title_en", "untitled").lower().replace(" ", "-").replace("'", "")
+        content_doc = {
+            "category": category,
+            "slug": slug,
+            "title_hi": item_data.get("title_hi", ""),
+            "title_en": item_data.get("title_en", ""),
+            "deity": item_data.get("deity", ""),
+            "deity_hi": item_data.get("deity_hi", ""),
+            "description_hi": item_data.get("description_hi", ""),
+            "description_en": item_data.get("description_en", ""),
+            "thumbnail_url": "",
+            "audio_url": "",
+            "has_beginner_mode": True,
+            "has_expert_mode": True,
+            "total_verses": len(item_data.get("verses", [])),
+            "sort_order": published_count + 1,
+            "is_active": True,
+            "is_premium": False,
+            "tags": [],
+            "supported_languages": ["hi", "en", "sa"],
+            "like_count": 0,
+            "status": "published",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "created_by": admin["_id"]
+        }
+        result = await db.content_items.insert_one(content_doc)
+        item_id = str(result.inserted_id)
+
+        for verse in item_data.get("verses", []):
+            verse_doc = {
+                "item_id": item_id,
+                "verse_num": verse.get("verse_num", 1),
+                "verse_type": verse.get("verse_type", "shloka"),
+                "sanskrit_text": verse.get("sanskrit_text", ""),
+                "transliteration": verse.get("transliteration", ""),
+                "sort_order": verse.get("verse_num", 1),
+                "is_active": True,
+                "audio_start_ms": 0,
+                "audio_end_ms": 0
+            }
+            v_result = await db.content_verses.insert_one(verse_doc)
+            verse_id = str(v_result.inserted_id)
+
+            if verse.get("meaning_hi"):
+                await db.verse_meanings.insert_one({"verse_id": verse_id, "language": "hi", "meaning": verse["meaning_hi"], "word_breakdown": []})
+            if verse.get("meaning_en"):
+                await db.verse_meanings.insert_one({"verse_id": verse_id, "language": "en", "meaning": verse["meaning_en"], "word_breakdown": []})
+
+        published_count += 1
+
+    await db.upload_logs.update_one(
+        {"_id": ObjectId(upload_id)},
+        {"$set": {"status": "published", "published_at": datetime.now(timezone.utc).isoformat()}}
+    )
+
+    return {"message": f"Published {published_count} items", "count": published_count}
+
+@api_router.get("/admin/uploads")
+async def list_uploads(admin: dict = Depends(require_role(["super_admin", "content_admin", "moderator"]))):
+    uploads = await db.upload_logs.find({}, {"parsed_data": 0}).sort("created_at", -1).to_list(100)
+    return [serialize_doc(u) for u in uploads]
+
+@api_router.get("/admin/uploads/{upload_id}")
+async def get_upload(upload_id: str, admin: dict = Depends(require_role(["super_admin", "content_admin", "moderator"]))):
+    upload = await db.upload_logs.find_one({"_id": ObjectId(upload_id)})
+    if not upload:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    return serialize_doc(upload)
+
+# ===================== TTS AUDIO GENERATION =====================
+
+@api_router.post("/media/generate-tts")
+async def generate_tts(request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    body = await request.json()
+    text = body.get("text", "")
+    voice = body.get("voice", "echo")
+    model = body.get("model", "tts-1")
+    verse_id = body.get("verse_id")
+
+    if not text:
+        raise HTTPException(status_code=400, detail="Text is required")
+    if len(text) > 4096:
+        raise HTTPException(status_code=400, detail="Text too long (max 4096 chars)")
+
+    try:
+        from emergentintegrations.llm.openai import OpenAITextToSpeech
+        import base64
+
+        tts = OpenAITextToSpeech(api_key=os.environ.get("EMERGENT_LLM_KEY", ""))
+        audio_bytes = await tts.generate_speech(text=text, model=model, voice=voice, response_format="mp3")
+
+        audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
+
+        # If verse_id provided, save reference
+        if verse_id:
+            await db.content_verses.update_one(
+                {"_id": ObjectId(verse_id)},
+                {"$set": {"tts_audio_base64": audio_base64[:100] + "...", "tts_voice": voice, "tts_generated_at": datetime.now(timezone.utc).isoformat()}}
+            )
+
+        return {
+            "audio_base64": audio_base64,
+            "format": "mp3",
+            "voice": voice,
+            "model": model,
+            "text_length": len(text)
+        }
+    except Exception as e:
+        logger.error(f"TTS generation error: {e}")
+        raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}")
+
+# ===================== BATCH TTS & AUDIO MANAGEMENT =====================
+
+@api_router.post("/media/batch-tts/{item_id}")
+async def batch_generate_tts(item_id: str, request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    """Generate TTS audio for ALL verses in a content item"""
+    body = await request.json() if request.headers.get("content-type") == "application/json" else {}
+    voice = body.get("voice", "echo")
+    model = body.get("model", "tts-1")
+
+    item = await db.content_items.find_one({"_id": ObjectId(item_id)})
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    verses = await db.content_verses.find({"item_id": item_id}).sort("sort_order", 1).to_list(500)
+    if not verses:
+        raise HTTPException(status_code=404, detail="No verses found")
+
+    try:
+        from emergentintegrations.llm.openai import OpenAITextToSpeech
+        import base64
+
+        tts = OpenAITextToSpeech(api_key=os.environ.get("EMERGENT_LLM_KEY", ""))
+        generated = 0
+        errors = []
+
+        for verse in verses:
+            text = verse.get("sanskrit_text", "")
+            if not text or len(text) < 2:
+                continue
+            # Skip if already has audio
+            if verse.get("audio_base64"):
+                continue
+
+            try:
+                audio_bytes = await tts.generate_speech(text=text[:4096], model=model, voice=voice, response_format="mp3")
+                audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+
+                await db.content_verses.update_one(
+                    {"_id": verse["_id"]},
+                    {"$set": {
+                        "audio_base64": audio_b64,
+                        "tts_voice": voice,
+                        "tts_model": model,
+                        "tts_generated_at": datetime.now(timezone.utc).isoformat(),
+                        "audio_duration_ms": len(audio_bytes) * 8 // 128  # rough estimate for mp3
+                    }}
+                )
+                generated += 1
+                logger.info(f"TTS generated for verse {verse.get('verse_num')} of {item.get('title_en')}")
+            except Exception as e:
+                errors.append(f"Verse {verse.get('verse_num')}: {str(e)[:100]}")
+                logger.error(f"TTS error for verse {verse.get('verse_num')}: {e}")
+
+        # Update item with audio status
+        await db.content_items.update_one(
+            {"_id": ObjectId(item_id)},
+            {"$set": {"has_tts_audio": True, "tts_voice": voice, "audio_generated_at": datetime.now(timezone.utc).isoformat()}}
+        )
+
+        await log_audit("batch_tts_generated", admin_id=admin["_id"], admin_email=admin.get("email"), ip=admin.get("_ip", ""), details={"item_id": item_id, "title": item.get("title_en"), "generated": generated, "errors": len(errors)})
+
+        return {"message": f"Generated TTS for {generated} verses", "generated": generated, "total_verses": len(verses), "errors": errors}
+    except Exception as e:
+        logger.error(f"Batch TTS error: {e}")
+        raise HTTPException(status_code=500, detail=f"Batch TTS failed: {str(e)}")
+
+@api_router.get("/content/items/{item_id}/verses-with-audio")
+async def get_verses_with_audio(item_id: str):
+    """Get verses with audio data for the audio player"""
+    verses = await db.content_verses.find({"item_id": item_id}).sort("sort_order", 1).to_list(500)
+    result = []
+    for v in verses:
+        doc = serialize_doc(v)
+        doc["has_audio"] = bool(v.get("audio_base64"))
+        # Don't send full base64 in list — use separate endpoint
+        doc.pop("audio_base64", None)
+        result.append(doc)
+    return result
+
+@api_router.get("/content/verses/{verse_id}/audio")
+async def get_verse_audio(verse_id: str):
+    """Get audio data for a single verse"""
+    verse = await db.content_verses.find_one({"_id": ObjectId(verse_id)})
+    if not verse:
+        raise HTTPException(status_code=404, detail="Verse not found")
+    if not verse.get("audio_base64"):
+        raise HTTPException(status_code=404, detail="No audio available for this verse")
+    return {
+        "verse_id": verse_id,
+        "audio_base64": verse["audio_base64"],
+        "format": "mp3",
+        "voice": verse.get("tts_voice", "echo"),
+        "verse_num": verse.get("verse_num"),
+        "duration_ms": verse.get("audio_duration_ms", 0)
+    }
+
+@api_router.get("/content/items/{item_id}/full-audio")
+async def get_item_full_audio(item_id: str):
+    """Get all verse audio for continuous playback"""
+    verses = await db.content_verses.find({"item_id": item_id, "audio_base64": {"$exists": True, "$ne": ""}}).sort("sort_order", 1).to_list(500)
+    result = []
+    for v in verses:
+        result.append({
+            "verse_id": str(v["_id"]),
+            "verse_num": v.get("verse_num"),
+            "sanskrit_text": v.get("sanskrit_text", ""),
+            "audio_base64": v.get("audio_base64", ""),
+            "duration_ms": v.get("audio_duration_ms", 0),
+        })
+    return {"item_id": item_id, "verses": result, "total": len(result)}
+
+# ===================== USER AUTH (Mobile App) =====================
+
+# MSG91 User Existence Validation API
+# MSG91 calls this GET endpoint before sending OTP to validate if user/phone exists
+@api_router.get("/auth/user/exists/{identifier}")
+async def check_user_exists(identifier: str):
+    """MSG91 User Existence Validation API.
+    MSG91 sends GET request with phone number as path param.
+    Must return: {"user_found": true/false, "identifier": "phone_or_email"}
+    """
+    if not identifier:
+        return {"user_found": False, "identifier": ""}
+
+    # Clean phone number
+    phone = identifier.strip().replace(" ", "").replace("-", "")
+
+    user = await db.user_profiles.find_one({
+        "$or": [
+            {"phone": phone},
+            {"phone": f"+91{phone}"} if not phone.startswith("+") else {"phone": phone},
+            {"email": identifier.lower()}
+        ]
+    })
+
+    if user:
+        return {
+            "user_found": True,
+            "identifier": user.get("phone") or user.get("email", identifier)
+        }
+    else:
+        return {
+            "user_found": True,
+            "identifier": identifier
+        }
+
+class UserRegisterReq(BaseModel):
+    phone: str
+    name: str = ""
+    language_pref: str = "hi"
+
+class UserOTPVerifyReq(BaseModel):
+    phone: str
+    otp: str
+
+class UserGoogleAuthReq(BaseModel):
+    email: str
+    name: str
+    avatar_url: str = ""
+
+@api_router.post("/auth/user/send-otp")
+async def send_otp(req: UserRegisterReq):
+    # Generate 6-digit OTP
+    import random
+    otp = str(random.randint(100000, 999999))
+
+    # Store OTP in DB (expires in 5 min)
+    await db.otp_store.update_one(
+        {"phone": req.phone},
+        {"$set": {"otp": otp, "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(), "attempts": 0}},
+        upsert=True
+    )
+
+    # Try sending via MSG91 if configured
+    msg91_auth_key = await get_setting("msg91_auth_key")
+    msg91_template_id = await get_setting("msg91_template_id")
+    if msg91_auth_key and msg91_template_id:
+        try:
+            import requests as http_requests
+            phone = req.phone if req.phone.startswith("+") else f"+91{req.phone}"
+            resp = http_requests.post(
+                "https://control.msg91.com/api/v5/otp",
+                headers={"authkey": msg91_auth_key, "Content-Type": "application/json"},
+                json={"template_id": msg91_template_id, "mobile": phone.replace("+", ""), "otp": otp}
+            )
+            logger.info(f"MSG91 OTP response: {resp.status_code}")
+            return {"message": "OTP sent via SMS", "sent_via": "msg91"}
+        except Exception as e:
+            logger.error(f"MSG91 error: {e}")
+
+    logger.info(f"OTP for {req.phone}: {otp}")
+    return {"message": "OTP sent successfully", "debug_otp": otp}
+
+@api_router.post("/auth/user/verify-otp")
+async def verify_otp(req: UserOTPVerifyReq, response: Response):
+    stored = await db.otp_store.find_one({"phone": req.phone})
+    if not stored:
+        raise HTTPException(status_code=400, detail="No OTP found. Please request a new one.")
+    if stored.get("attempts", 0) >= 5:
+        raise HTTPException(status_code=429, detail="Too many attempts. Please request a new OTP.")
+    if stored["otp"] != req.otp:
+        await db.otp_store.update_one({"phone": req.phone}, {"$inc": {"attempts": 1}})
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+
+    # OTP valid - find or create user
+    user = await db.user_profiles.find_one({"phone": req.phone})
+    if not user:
+        user_doc = {
+            "phone": req.phone,
+            "name": "",
+            "email": "",
+            "avatar_url": "",
+            "language_pref": "hi",
+            "mode_pref": "beginner",
+            "is_premium": False,
+            "streak_count": 0,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "last_active_at": datetime.now(timezone.utc).isoformat()
+        }
+        result = await db.user_profiles.insert_one(user_doc)
+        user_doc["_id"] = result.inserted_id
+        user = user_doc
+
+    user_id = str(user["_id"])
+    access_token = jwt.encode(
+        {"sub": user_id, "phone": req.phone, "type": "access", "role": "user", "exp": datetime.now(timezone.utc) + timedelta(days=30)},
+        JWT_SECRET, algorithm=JWT_ALGORITHM
+    )
+
+    # Clean up OTP
+    await db.otp_store.delete_one({"phone": req.phone})
+
+    return {"token": access_token, "user": serialize_doc(user)}
+
+# MSG91 Widget Token Verification — After OTP verified on mobile via MSG91 widget
+@api_router.post("/auth/user/msg91-verify")
+async def msg91_widget_verify(request: Request, response: Response):
+    body = await request.json()
+    phone = body.get("phone", "")
+    msg91_token = body.get("msg91_token", "")
+
+    if not phone:
+        raise HTTPException(status_code=400, detail="Phone number required")
+
+    # If MSG91 token provided, verify with MSG91 server
+    if msg91_token:
+        msg91_auth_key = await get_setting("msg91_auth_key")
+        if msg91_auth_key:
+            try:
+                import requests as http_requests
+                verify_resp = http_requests.get(
+                    f"https://control.msg91.com/api/v5/otp/verify?otp={msg91_token}&mobile={phone.replace('+', '')}",
+                    headers={"authkey": msg91_auth_key}
+                )
+                if verify_resp.status_code != 200 or verify_resp.json().get("type") != "success":
+                    raise HTTPException(status_code=400, detail="MSG91 token verification failed")
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"MSG91 verify error: {e}")
+
+    # Clean phone
+    clean_phone = phone.strip().replace(" ", "").replace("-", "")
+    if not clean_phone.startswith("+"):
+        clean_phone = f"+91{clean_phone}"
+
+    # Find or create user
+    user = await db.user_profiles.find_one({"$or": [{"phone": clean_phone}, {"phone": phone}]})
+    if not user:
+        user_doc = {
+            "phone": clean_phone,
+            "name": body.get("name", ""),
+            "email": "",
+            "avatar_url": "",
+            "language_pref": "hi",
+            "mode_pref": "beginner",
+            "is_premium": False,
+            "streak_count": 0,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "last_active_at": datetime.now(timezone.utc).isoformat()
+        }
+        result = await db.user_profiles.insert_one(user_doc)
+        user_doc["_id"] = result.inserted_id
+        user = user_doc
+    else:
+        await db.user_profiles.update_one({"_id": user["_id"]}, {"$set": {"last_active_at": datetime.now(timezone.utc).isoformat()}})
+
+    user_id = str(user["_id"])
+    access_token = jwt.encode(
+        {"sub": user_id, "phone": clean_phone, "type": "access", "role": "user", "exp": datetime.now(timezone.utc) + timedelta(days=30)},
+        JWT_SECRET, algorithm=JWT_ALGORITHM
+    )
+
+    await log_audit("user_login_otp", details={"phone": clean_phone, "method": "msg91_widget"})
+    return {"token": access_token, "user": serialize_doc(user)}
+
+@api_router.post("/auth/user/google")
+async def google_auth(req: UserGoogleAuthReq, response: Response):
+    user = await db.user_profiles.find_one({"email": req.email})
+    if not user:
+        user_doc = {
+            "phone": "",
+            "name": req.name,
+            "email": req.email,
+            "avatar_url": req.avatar_url,
+            "language_pref": "hi",
+            "mode_pref": "beginner",
+            "is_premium": False,
+            "streak_count": 0,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "last_active_at": datetime.now(timezone.utc).isoformat()
+        }
+        result = await db.user_profiles.insert_one(user_doc)
+        user_doc["_id"] = result.inserted_id
+        user = user_doc
+    else:
+        await db.user_profiles.update_one({"_id": user["_id"]}, {"$set": {"last_active_at": datetime.now(timezone.utc).isoformat(), "name": req.name}})
+
+    user_id = str(user["_id"])
+    access_token = jwt.encode(
+        {"sub": user_id, "email": req.email, "type": "access", "role": "user", "exp": datetime.now(timezone.utc) + timedelta(days=30)},
+        JWT_SECRET, algorithm=JWT_ALGORITHM
+    )
+
+    return {"token": access_token, "user": serialize_doc(user)}
+
+# ===================== PDF UPLOAD + VEDAS PARSING =====================
+
+@api_router.post("/admin/upload/pdf")
+async def upload_pdf(file: UploadFile = File(...), book_type: str = Form("veda"), admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    if not file.filename.endswith(('.pdf', '.PDF')):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+
+    content = await file.read()
+    upload_log = {
+        "admin_id": admin["_id"], "file_name": file.filename, "file_type": "pdf",
+        "category": book_type, "status": "parsing", "parsed_items_count": 0,
+        "error_message": None, "parsed_data": None,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    log_result = await db.upload_logs.insert_one(upload_log)
+    upload_id = str(log_result.inserted_id)
+
+    try:
+        import io, pdfplumber, json
+        raw_text = ""
+        with pdfplumber.open(io.BytesIO(content)) as pdf:
+            for i, page in enumerate(pdf.pages[:50]):
+                text = page.extract_text()
+                if text:
+                    raw_text += f"\n--- Page {i+1} ---\n{text}\n"
+
+        if not raw_text.strip():
+            raise HTTPException(status_code=400, detail="No text found in PDF")
+
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        chat = LlmChat(
+            api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
+            session_id=f"pdf-parse-{upload_id}",
+            system_message="""You are a Vedic scripture parser. Extract structured content from PDF text.
+Return ONLY valid JSON:
+{
+  "book_title_hi": "ऋग्वेद",
+  "book_title_en": "Rig Veda",
+  "description_en": "brief description",
+  "chapters": [{
+    "chapter_num": 1,
+    "title_hi": "प्रथम मण्डल",
+    "title_en": "First Mandala",
+    "verses": [{
+      "verse_num": 1,
+      "text_sa": "Sanskrit text",
+      "transliteration": "transliteration",
+      "meaning_hi": "Hindi meaning",
+      "meaning_en": "English meaning"
+    }]
+  }]
+}"""
+        )
+        chat.with_model("anthropic", "claude-sonnet-4-5-20250929")
+        ai_response = await chat.send_message(UserMessage(text=f"Parse this Vedic/Puranic PDF text into structured chapters and verses:\n\n{raw_text[:15000]}"))
+
+        json_str = ai_response
+        if "```json" in json_str:
+            json_str = json_str.split("```json")[1].split("```")[0]
+        elif "```" in json_str:
+            json_str = json_str.split("```")[1].split("```")[0]
+        parsed_data = json.loads(json_str.strip())
+
+        total_verses = sum(len(ch.get("verses", [])) for ch in parsed_data.get("chapters", []))
+        await db.upload_logs.update_one(
+            {"_id": ObjectId(upload_id)},
+            {"$set": {"status": "parsed", "parsed_data": parsed_data, "parsed_items_count": total_verses}}
+        )
+        return {"upload_id": upload_id, "status": "parsed", "parsed_data": parsed_data, "total_chapters": len(parsed_data.get("chapters", [])), "total_verses": total_verses}
+
+    except Exception as e:
+        logger.error(f"PDF parsing error: {e}")
+        await db.upload_logs.update_one({"_id": ObjectId(upload_id)}, {"$set": {"status": "error", "error_message": str(e)}})
+        raise HTTPException(status_code=500, detail=f"PDF parsing failed: {str(e)}")
+
+@api_router.post("/admin/upload/pdf/publish/{upload_id}")
+async def publish_pdf_upload(upload_id: str, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    upload = await db.upload_logs.find_one({"_id": ObjectId(upload_id)})
+    if not upload or upload["status"] != "parsed":
+        raise HTTPException(status_code=400, detail="Upload not found or not parsed")
+
+    parsed = upload.get("parsed_data", {})
+    book_doc = {
+        "title_hi": parsed.get("book_title_hi", ""), "title_en": parsed.get("book_title_en", ""),
+        "category": upload.get("category", "veda"), "description_en": parsed.get("description_en", ""),
+        "description_hi": parsed.get("description_hi", ""),
+        "total_chapters": len(parsed.get("chapters", [])),
+        "sort_order": 10, "is_active": True, "parsing_status": "completed"
+    }
+    book_result = await db.veda_books.insert_one(book_doc)
+    book_id = str(book_result.inserted_id)
+
+    for ch in parsed.get("chapters", []):
+        ch_doc = {"book_id": book_id, "chapter_num": ch.get("chapter_num", 1), "title_hi": ch.get("title_hi", ""), "title_en": ch.get("title_en", ""), "total_verses": len(ch.get("verses", [])), "sort_order": ch.get("chapter_num", 1)}
+        ch_result = await db.veda_chapters.insert_one(ch_doc)
+        ch_id = str(ch_result.inserted_id)
+        for v in ch.get("verses", []):
+            await db.veda_verses.insert_one({"chapter_id": ch_id, "verse_num": v.get("verse_num", 1), "text_sa": v.get("text_sa", ""), "transliteration": v.get("transliteration", ""), "meaning_hi": v.get("meaning_hi", ""), "meaning_en": v.get("meaning_en", ""), "sort_order": v.get("verse_num", 1)})
+
+    await db.upload_logs.update_one({"_id": ObjectId(upload_id)}, {"$set": {"status": "published"}})
+    return {"message": "Published", "book_id": book_id}
+
+# ===================== PANCHANG PDF IMPORT =====================
+
+@api_router.post("/admin/panchang/import-pdf")
+async def import_panchang_pdf(file: UploadFile = File(...), admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    content = await file.read()
+    try:
+        import io, pdfplumber, json
+        raw_text = ""
+        with pdfplumber.open(io.BytesIO(content)) as pdf:
+            for page in pdf.pages[:100]:
+                text = page.extract_text()
+                if text:
+                    raw_text += text + "\n"
+
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        chat = LlmChat(
+            api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
+            session_id=f"panchang-import-{uuid.uuid4()}",
+            system_message="""Extract Hindu Panchang calendar data from this PDF. Return ONLY valid JSON array:
+[{
+  "date": "YYYY-MM-DD",
+  "tithi": "तिथि name in Hindi",
+  "nakshatra": "नक्षत्र name in Hindi",
+  "yoga": "योग name in Hindi",
+  "karana": "करण name",
+  "sunrise": "HH:MM",
+  "sunset": "HH:MM",
+  "rahu_kaal": "HH:MM-HH:MM",
+  "festival_name": "festival in Hindi (empty if none)",
+  "festival_name_en": "festival in English",
+  "vrat_name": "vrat in Hindi (empty if none)",
+  "vrat_name_en": "vrat in English",
+  "is_panchak": false,
+  "is_bhadra": false
+}]
+Extract as many dates as possible from the PDF."""
+        )
+        chat.with_model("anthropic", "claude-sonnet-4-5-20250929")
+        ai_response = await chat.send_message(UserMessage(text=f"Extract panchang data:\n\n{raw_text[:15000]}"))
+
+        json_str = ai_response
+        if "```json" in json_str:
+            json_str = json_str.split("```json")[1].split("```")[0]
+        elif "```" in json_str:
+            json_str = json_str.split("```")[1].split("```")[0]
+        entries = json.loads(json_str.strip())
+
+        imported = 0
+        for entry in entries:
+            if entry.get("date"):
+                await db.panchang.update_one({"date": entry["date"]}, {"$set": entry}, upsert=True)
+                imported += 1
+
+        return {"message": f"Imported {imported} panchang entries", "count": imported, "entries": entries[:5]}
+    except Exception as e:
+        logger.error(f"Panchang PDF import error: {e}")
+        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+
+# ===================== KATHA CHAPTERS/VERSES CRUD =====================
+
+@api_router.get("/katha/items/{katha_id}/chapters")
+async def get_katha_chapters(katha_id: str):
+    chapters = await db.katha_verses.find({"katha_id": katha_id}).sort("chapter_num", 1).to_list(500)
+    return [serialize_doc(c) for c in chapters]
+
+@api_router.post("/katha/items/{katha_id}/chapters")
+async def create_katha_chapter(katha_id: str, request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    body = await request.json()
+    body["katha_id"] = katha_id
+    result = await db.katha_verses.insert_one(body)
+    body["_id"] = str(result.inserted_id)
+    return body
+
+@api_router.put("/katha/verses/{verse_id}")
+async def update_katha_verse(verse_id: str, request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    body = await request.json()
+    body.pop("_id", None)
+    await db.katha_verses.update_one({"_id": ObjectId(verse_id)}, {"$set": body})
+    updated = await db.katha_verses.find_one({"_id": ObjectId(verse_id)})
+    return serialize_doc(updated)
+
+@api_router.delete("/katha/verses/{verse_id}")
+async def delete_katha_verse(verse_id: str, admin: dict = Depends(require_role(["super_admin"]))):
+    await db.katha_verses.delete_one({"_id": ObjectId(verse_id)})
+    return {"message": "Deleted"}
+
+# ===================== SHLOKA CARD IMAGE GENERATION (Nano Banana) =====================
+
+@api_router.post("/media/generate-image")
+async def generate_shloka_image(request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    body = await request.json()
+    prompt = body.get("prompt", "")
+    shloka_text = body.get("shloka_text", "")
+
+    if not prompt and not shloka_text:
+        raise HTTPException(status_code=400, detail="Prompt or shloka text required")
+
+    full_prompt = prompt if prompt else f"Create a beautiful, ornate Indian spiritual art card background for this Sanskrit shloka: '{shloka_text[:200]}'. Use traditional Hindu temple art style with warm saffron, gold and deep red colors. Include decorative borders with lotus, Om symbols and sacred geometry patterns. The background should be elegant and suitable for text overlay."
+
+    try:
+        import base64
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+
+        chat = LlmChat(
+            api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
+            session_id=f"img-gen-{uuid.uuid4()}",
+            system_message="You are an AI image generator creating beautiful Hindu spiritual art."
+        )
+        chat.with_model("gemini", "gemini-3.1-flash-image-preview").with_params(modalities=["image", "text"])
+
+        msg = UserMessage(text=full_prompt)
+        text_resp, images = await chat.send_message_multimodal_response(msg)
+
+        if images and len(images) > 0:
+            return {
+                "image_base64": images[0]["data"],
+                "mime_type": images[0].get("mime_type", "image/png"),
+                "prompt_used": full_prompt[:200],
+                "text_response": text_resp[:200] if text_resp else ""
+            }
+        else:
+            return {"error": "No image generated", "text_response": text_resp[:500] if text_resp else ""}
+    except Exception as e:
+        logger.error(f"Image generation error: {e}")
+        raise HTTPException(status_code=500, detail=f"Image generation failed: {str(e)}")
+
+# ===================== VIDEO GENERATION (Sora 2) =====================
+
+@api_router.post("/media/generate-video")
+async def generate_video(request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    body = await request.json()
+    prompt = body.get("prompt", "")
+    size = body.get("size", "1280x720")
+    duration = body.get("duration", 4)
+    model = body.get("model", "sora-2")
+
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Prompt is required")
+    if size not in ["1280x720", "1792x1024", "1024x1792", "1024x1024"]:
+        raise HTTPException(status_code=400, detail="Invalid size")
+    if duration not in [4, 8, 12]:
+        raise HTTPException(status_code=400, detail="Duration must be 4, 8, or 12")
+
+    try:
+        import asyncio, base64
+        from emergentintegrations.llm.openai.video_generation import OpenAIVideoGeneration
+
+        video_gen = OpenAIVideoGeneration(api_key=os.environ.get("EMERGENT_LLM_KEY", ""))
+
+        # Run sync video generation in thread executor
+        loop = asyncio.get_event_loop()
+        video_bytes = await loop.run_in_executor(
+            None,
+            lambda: video_gen.text_to_video(prompt=prompt, model=model, size=size, duration=duration, max_wait_time=600)
+        )
+
+        if video_bytes:
+            video_base64 = base64.b64encode(video_bytes).decode("utf-8")
+
+            # Save to user videos collection
+            video_doc = {
+                "user_id": admin["_id"],
+                "prompt": prompt,
+                "model": model,
+                "size": size,
+                "duration": duration,
+                "video_base64_preview": video_base64[:100],
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
+            await db.user_videos.insert_one(video_doc)
+
+            return {
+                "video_base64": video_base64,
+                "format": "mp4",
+                "prompt": prompt,
+                "size": size,
+                "duration": duration,
+                "model": model
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Video generation returned no data")
+    except Exception as e:
+        logger.error(f"Video generation error: {e}")
+        raise HTTPException(status_code=500, detail=f"Video generation failed: {str(e)}")
+
+# ===================== NAKSHATRA & UPAYA (Personalized Spiritual) =====================
+
+NAKSHATRAS = [
+    {"num": 1, "name_hi": "अश्विनी", "name_en": "Ashwini", "deity": "Ashwini Kumaras", "graha": "Ketu"},
+    {"num": 2, "name_hi": "भरणी", "name_en": "Bharani", "deity": "Yama", "graha": "Venus"},
+    {"num": 3, "name_hi": "कृत्तिका", "name_en": "Krittika", "deity": "Agni", "graha": "Sun"},
+    {"num": 4, "name_hi": "रोहिणी", "name_en": "Rohini", "deity": "Brahma", "graha": "Moon"},
+    {"num": 5, "name_hi": "मृगशीर्ष", "name_en": "Mrigashira", "deity": "Soma", "graha": "Mars"},
+    {"num": 6, "name_hi": "आर्द्रा", "name_en": "Ardra", "deity": "Rudra", "graha": "Rahu"},
+    {"num": 7, "name_hi": "पुनर्वसु", "name_en": "Punarvasu", "deity": "Aditi", "graha": "Jupiter"},
+    {"num": 8, "name_hi": "पुष्य", "name_en": "Pushya", "deity": "Brihaspati", "graha": "Saturn"},
+    {"num": 9, "name_hi": "आश्लेषा", "name_en": "Ashlesha", "deity": "Nagas", "graha": "Mercury"},
+    {"num": 10, "name_hi": "मघा", "name_en": "Magha", "deity": "Pitrs", "graha": "Ketu"},
+    {"num": 11, "name_hi": "पूर्व फाल्गुनी", "name_en": "Purva Phalguni", "deity": "Bhaga", "graha": "Venus"},
+    {"num": 12, "name_hi": "उत्तर फाल्गुनी", "name_en": "Uttara Phalguni", "deity": "Aryaman", "graha": "Sun"},
+    {"num": 13, "name_hi": "हस्त", "name_en": "Hasta", "deity": "Savitar", "graha": "Moon"},
+    {"num": 14, "name_hi": "चित्रा", "name_en": "Chitra", "deity": "Vishwakarma", "graha": "Mars"},
+    {"num": 15, "name_hi": "स्वाती", "name_en": "Swati", "deity": "Vayu", "graha": "Rahu"},
+    {"num": 16, "name_hi": "विशाखा", "name_en": "Vishakha", "deity": "Indra-Agni", "graha": "Jupiter"},
+    {"num": 17, "name_hi": "अनुराधा", "name_en": "Anuradha", "deity": "Mitra", "graha": "Saturn"},
+    {"num": 18, "name_hi": "ज्येष्ठा", "name_en": "Jyeshtha", "deity": "Indra", "graha": "Mercury"},
+    {"num": 19, "name_hi": "मूल", "name_en": "Mula", "deity": "Nirrti", "graha": "Ketu"},
+    {"num": 20, "name_hi": "पूर्वाषाढ़ा", "name_en": "Purva Ashadha", "deity": "Apah", "graha": "Venus"},
+    {"num": 21, "name_hi": "उत्तराषाढ़ा", "name_en": "Uttara Ashadha", "deity": "Vishvedevas", "graha": "Sun"},
+    {"num": 22, "name_hi": "श्रवण", "name_en": "Shravana", "deity": "Vishnu", "graha": "Moon"},
+    {"num": 23, "name_hi": "धनिष्ठा", "name_en": "Dhanishta", "deity": "Vasus", "graha": "Mars"},
+    {"num": 24, "name_hi": "शतभिषा", "name_en": "Shatabhisha", "deity": "Varuna", "graha": "Rahu"},
+    {"num": 25, "name_hi": "पूर्व भाद्रपद", "name_en": "Purva Bhadrapada", "deity": "Aja Ekapada", "graha": "Jupiter"},
+    {"num": 26, "name_hi": "उत्तर भाद्रपद", "name_en": "Uttara Bhadrapada", "deity": "Ahir Budhnya", "graha": "Saturn"},
+    {"num": 27, "name_hi": "रेवती", "name_en": "Revati", "deity": "Pushan", "graha": "Mercury"},
+]
+
+@api_router.get("/nakshatras")
+async def list_nakshatras():
+    return NAKSHATRAS
+
+@api_router.post("/user/nakshatra-profile")
+async def set_nakshatra_profile(request: Request):
+    body = await request.json()
+    user_id = body.get("user_id")
+    nakshatra_num = body.get("nakshatra_num")
+    dob = body.get("dob", "")
+    birth_time = body.get("birth_time", "")
+    birth_place = body.get("birth_place", "")
+
+    if not user_id or not nakshatra_num:
+        raise HTTPException(status_code=400, detail="user_id and nakshatra_num required")
+
+    nakshatra = next((n for n in NAKSHATRAS if n["num"] == nakshatra_num), None)
+    if not nakshatra:
+        raise HTTPException(status_code=400, detail="Invalid nakshatra number")
+
+    profile = {
+        "user_id": user_id,
+        "nakshatra_num": nakshatra_num,
+        "nakshatra_name_hi": nakshatra["name_hi"],
+        "nakshatra_name_en": nakshatra["name_en"],
+        "ruling_graha": nakshatra["graha"],
+        "nakshatra_deity": nakshatra["deity"],
+        "dob": dob,
+        "birth_time": birth_time,
+        "birth_place": birth_place,
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+
+    await db.nakshatra_profiles.update_one({"user_id": user_id}, {"$set": profile}, upsert=True)
+    return profile
+
+@api_router.get("/user/nakshatra-profile/{user_id}")
+async def get_nakshatra_profile(user_id: str):
+    profile = await db.nakshatra_profiles.find_one({"user_id": user_id}, {"_id": 0})
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return profile
+
+@api_router.post("/user/upaya")
+async def get_personalized_upaya(request: Request):
+    body = await request.json()
+    user_id = body.get("user_id")
+    concern = body.get("concern", "general wellbeing")
+
+    profile = await db.nakshatra_profiles.find_one({"user_id": user_id})
+    if not profile:
+        raise HTTPException(status_code=404, detail="Nakshatra profile not set. Please set your birth details first.")
+
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        chat = LlmChat(
+            api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
+            session_id=f"upaya-{uuid.uuid4()}",
+            system_message="""You are a Vedic astrology expert. Provide personalized spiritual remedies (Upaya) based on the user's Nakshatra and birth details.
+
+Include in your response:
+1. Graha Shanti (planetary remedy) - specific mantras and puja
+2. Recommended daily mantras based on their ruling planet
+3. Specific deity worship recommendations
+4. Fasting days (Vrat) beneficial for their nakshatra
+5. Gemstone recommendation
+6. Charitable acts (Daan) recommendations
+7. Any specific puja vidhi for their concern
+
+Respond in both Hindi and English. Be specific with mantra texts in Sanskrit."""
+        )
+        chat.with_model("anthropic", "claude-sonnet-4-5-20250929")
+
+        prompt = f"""Generate personalized Upaya (spiritual remedies) for:
+- Nakshatra: {profile['nakshatra_name_en']} ({profile['nakshatra_name_hi']})
+- Ruling Planet (Graha): {profile['ruling_graha']}
+- Nakshatra Deity: {profile['nakshatra_deity']}
+- Date of Birth: {profile.get('dob', 'Not provided')}
+- Concern: {concern}
+
+Provide detailed, practical Vedic remedies."""
+
+        ai_response = await chat.send_message(UserMessage(text=prompt))
+
+        # Save upaya to history
+        upaya_doc = {
+            "user_id": user_id,
+            "concern": concern,
+            "nakshatra": profile["nakshatra_name_en"],
+            "graha": profile["ruling_graha"],
+            "upaya_text": ai_response,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        await db.upaya_history.insert_one(upaya_doc)
+
+        return {
+            "upaya": ai_response,
+            "nakshatra": profile["nakshatra_name_en"],
+            "nakshatra_hi": profile["nakshatra_name_hi"],
+            "ruling_graha": profile["ruling_graha"],
+            "deity": profile["nakshatra_deity"],
+            "concern": concern
+        }
+    except Exception as e:
+        logger.error(f"Upaya generation error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate Upaya: {str(e)}")
+
+@api_router.get("/user/upaya-history/{user_id}")
+async def get_upaya_history(user_id: str):
+    history = await db.upaya_history.find({"user_id": user_id}).sort("created_at", -1).to_list(20)
+    return [serialize_doc(h) for h in history]
+
+@api_router.get("/nakshatra/{nakshatra_num}/content")
+async def get_nakshatra_content(nakshatra_num: int):
+    nakshatra = next((n for n in NAKSHATRAS if n["num"] == nakshatra_num), None)
+    if not nakshatra:
+        raise HTTPException(status_code=404, detail="Nakshatra not found")
+
+    graha = nakshatra["graha"].lower()
+    deity = nakshatra["deity"].lower()
+    regex_graha = {"$regex": graha, "$options": "i"}
+    regex_deity = {"$regex": deity, "$options": "i"}
+
+    items = await db.content_items.find({
+        "status": "published",
+        "$or": [{"tags": regex_graha}, {"tags": regex_deity}, {"deity": {"$regex": nakshatra["deity"], "$options": "i"}}]
+    }).limit(10).to_list(10)
+
+    return {
+        "nakshatra": nakshatra,
+        "recommended_content": [serialize_doc(i) for i in items],
+        "graha_mantras": {
+            "Ketu": "ॐ केतवे नमः (Om Ketave Namah)",
+            "Venus": "ॐ शुक्राय नमः (Om Shukraya Namah)",
+            "Sun": "ॐ सूर्याय नमः (Om Suryaya Namah)",
+            "Moon": "ॐ सोमाय नमः (Om Somaya Namah)",
+            "Mars": "ॐ अंगारकाय नमः (Om Angarakaya Namah)",
+            "Rahu": "ॐ राहवे नमः (Om Rahave Namah)",
+            "Jupiter": "ॐ बृहस्पतये नमः (Om Brihaspataye Namah)",
+            "Saturn": "ॐ शनैश्चराय नमः (Om Shanaishcharaya Namah)",
+            "Mercury": "ॐ बुधाय नमः (Om Budhaya Namah)"
+        }.get(nakshatra["graha"], "")
+    }
+
+# ===================== INTEGRATION SETTINGS HUB =====================
+
+INTEGRATION_CATEGORIES = {
+    "ai_llm": {"label": "AI / LLM", "icon": "brain", "fields": [
+        {"key": "emergent_llm_key", "label": "Emergent LLM Key (Universal)", "type": "secret", "description": "Universal key for Claude, OpenAI, Gemini via Emergent"},
+        {"key": "openai_api_key", "label": "OpenAI API Key", "type": "secret", "description": "Direct OpenAI key (if not using Emergent)"},
+        {"key": "anthropic_api_key", "label": "Anthropic API Key", "type": "secret", "description": "Direct Claude key (if not using Emergent)"},
+        {"key": "ai_model_chat", "label": "Chat Model", "type": "text", "description": "Model for VedaChat (e.g., claude-sonnet-4-5-20250929)"},
+        {"key": "ai_model_parsing", "label": "Parsing Model", "type": "text", "description": "Model for DOCX/PDF parsing"},
+    ]},
+    "tts_audio": {"label": "Text-to-Speech", "icon": "headphones", "fields": [
+        {"key": "tts_provider", "label": "TTS Provider", "type": "select", "options": ["openai", "google", "azure"], "description": "Which TTS provider to use"},
+        {"key": "tts_default_voice", "label": "Default Voice", "type": "text", "description": "Default voice (e.g., echo, alloy, onyx)"},
+        {"key": "tts_default_model", "label": "Default Model", "type": "text", "description": "tts-1 or tts-1-hd"},
+    ]},
+    "image_gen": {"label": "Image Generation", "icon": "image", "fields": [
+        {"key": "image_provider", "label": "Provider", "type": "select", "options": ["gemini_nano_banana", "dall_e", "midjourney"], "description": "Image generation provider"},
+        {"key": "image_model", "label": "Model", "type": "text", "description": "e.g., gemini-3.1-flash-image-preview"},
+    ]},
+    "video_gen": {"label": "Video Generation", "icon": "video", "fields": [
+        {"key": "video_provider", "label": "Provider", "type": "select", "options": ["sora_2", "pika_labs", "runway"], "description": "Video generation provider"},
+        {"key": "video_model", "label": "Model", "type": "text", "description": "e.g., sora-2 or sora-2-pro"},
+        {"key": "video_api_key", "label": "Video API Key", "type": "secret", "description": "API key if different from Emergent key"},
+    ]},
+    "sms_otp": {"label": "SMS / OTP", "icon": "phone", "fields": [
+        {"key": "sms_provider", "label": "SMS Provider", "type": "select", "options": ["msg91", "twilio", "textlocal"], "description": "SMS gateway provider"},
+        {"key": "msg91_auth_key", "label": "MSG91 Auth Key", "type": "secret", "description": "Get from MSG91 dashboard"},
+        {"key": "msg91_template_id", "label": "MSG91 Template ID", "type": "text", "description": "Approved OTP template ID"},
+        {"key": "msg91_sender_id", "label": "MSG91 Sender ID", "type": "text", "description": "6-char sender ID (e.g., SANATH)"},
+        {"key": "twilio_account_sid", "label": "Twilio Account SID", "type": "secret"},
+        {"key": "twilio_auth_token", "label": "Twilio Auth Token", "type": "secret"},
+        {"key": "twilio_phone_number", "label": "Twilio Phone Number", "type": "text"},
+    ]},
+    "payment": {"label": "Payment Gateway", "icon": "credit-card", "fields": [
+        {"key": "payment_provider", "label": "Payment Provider", "type": "select", "options": ["razorpay", "cashfree", "paytm"], "description": "Indian payment gateway"},
+        {"key": "razorpay_key_id", "label": "Razorpay Key ID", "type": "text", "description": "Get from Razorpay Dashboard"},
+        {"key": "razorpay_key_secret", "label": "Razorpay Key Secret", "type": "secret", "description": "Razorpay secret key"},
+        {"key": "razorpay_webhook_secret", "label": "Webhook Secret", "type": "secret"},
+        {"key": "subscription_monthly_price", "label": "Monthly Price (INR)", "type": "text", "description": "e.g., 99"},
+        {"key": "subscription_yearly_price", "label": "Yearly Price (INR)", "type": "text", "description": "e.g., 799"},
+    ]},
+    "storage": {"label": "Cloud Storage", "icon": "cloud", "fields": [
+        {"key": "storage_provider", "label": "Provider", "type": "select", "options": ["cloudflare_r2", "aws_s3", "supabase"], "description": "File storage provider"},
+        {"key": "r2_account_id", "label": "Cloudflare Account ID", "type": "text"},
+        {"key": "r2_access_key_id", "label": "R2 Access Key ID", "type": "secret"},
+        {"key": "r2_secret_access_key", "label": "R2 Secret Access Key", "type": "secret"},
+        {"key": "r2_bucket_name", "label": "R2 Bucket Name", "type": "text"},
+        {"key": "r2_public_url", "label": "R2 Public URL", "type": "text", "description": "Custom domain or R2 public URL"},
+    ]},
+    "push_notifications": {"label": "Push Notifications", "icon": "bell", "fields": [
+        {"key": "push_provider", "label": "Provider", "type": "select", "options": ["expo", "onesignal", "firebase"], "description": "Push notification service"},
+        {"key": "onesignal_app_id", "label": "OneSignal App ID", "type": "text"},
+        {"key": "onesignal_api_key", "label": "OneSignal API Key", "type": "secret"},
+        {"key": "firebase_server_key", "label": "Firebase Server Key", "type": "secret"},
+        {"key": "daily_reminder_time", "label": "Daily Reminder Time", "type": "text", "description": "e.g., 06:00"},
+        {"key": "daily_reminder_enabled", "label": "Reminders Enabled", "type": "toggle"},
+    ]},
+    "analytics": {"label": "Analytics", "icon": "bar-chart", "fields": [
+        {"key": "analytics_provider", "label": "Provider", "type": "select", "options": ["built_in", "posthog", "mixpanel", "google_analytics"]},
+        {"key": "posthog_api_key", "label": "PostHog API Key", "type": "secret"},
+        {"key": "ga_measurement_id", "label": "GA Measurement ID", "type": "text"},
+    ]},
+}
+
+@api_router.get("/admin/integrations/schema")
+async def get_integration_schema(admin: dict = Depends(require_role(["super_admin"]))):
+    return INTEGRATION_CATEGORIES
+
+@api_router.get("/admin/integrations")
+async def get_all_integrations(admin: dict = Depends(require_role(["super_admin"]))):
+    settings = await db.integration_settings.find({}).to_list(200)
+    result = {}
+    for s in settings:
+        key = s.get("key", "")
+        val = s.get("value", "")
+        field_type = s.get("field_type", "text")
+        if s.get("encrypted") and val:
+            decrypted = decrypt_value(val)
+            display_val = mask_secret(decrypted) if field_type == "secret" else decrypted
+        elif field_type == "secret" and val:
+            display_val = mask_secret(val)
+        else:
+            display_val = val
+        result[key] = {"value": display_val, "is_set": bool(s.get("value")), "updated_at": s.get("updated_at", "")}
+    return result
+
+@api_router.put("/admin/integrations")
+async def update_integrations(request: Request, admin: dict = Depends(require_role(["super_admin"]))):
+    body = await request.json()
+    updated = 0
+    changed_keys = []
+    for key, value in body.items():
+        if value is not None and value != "":
+            field_type = "text"
+            for cat in INTEGRATION_CATEGORIES.values():
+                for f in cat["fields"]:
+                    if f["key"] == key:
+                        field_type = f.get("type", "text")
+                        break
+            store_value = encrypt_value(value) if field_type == "secret" else value
+            await db.integration_settings.update_one(
+                {"key": key},
+                {"$set": {"key": key, "value": store_value, "field_type": field_type, "encrypted": field_type == "secret", "updated_at": datetime.now(timezone.utc).isoformat(), "updated_by": admin["_id"]}},
+                upsert=True
+            )
+            updated += 1
+            changed_keys.append(key)
+    await log_audit("integration_settings_updated", admin_id=admin["_id"], admin_email=admin.get("email"), ip=admin.get("_ip", ""), details={"keys": changed_keys})
+    return {"message": f"Updated {updated} settings", "count": updated}
+
+@api_router.delete("/admin/integrations/{key}")
+async def delete_integration(key: str, admin: dict = Depends(require_role(["super_admin"]))):
+    await db.integration_settings.delete_one({"key": key})
+    return {"message": f"Deleted {key}"}
+
+# Helper to get integration setting
+async def get_setting(key: str, default: str = "") -> str:
+    doc = await db.integration_settings.find_one({"key": key})
+    if doc and doc.get("value"):
+        return doc["value"]
+    return os.environ.get(key.upper(), default)
+
+# ===================== ANALYTICS & TRACKING =====================
+
+@api_router.post("/analytics/event")
+async def track_event(request: Request):
+    body = await request.json()
+    event = {
+        "event_type": body.get("event_type", "page_view"),
+        "user_id": body.get("user_id"),
+        "content_id": body.get("content_id"),
+        "content_type": body.get("content_type"),
+        "action": body.get("action", "view"),
+        "metadata": body.get("metadata", {}),
+        "device": body.get("device", ""),
+        "platform": body.get("platform", "web"),
+        "location": body.get("location", {}),
+        "session_id": body.get("session_id", ""),
+        "duration_seconds": body.get("duration_seconds", 0),
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    await db.analytics_events.insert_one(event)
+    return {"message": "Event tracked"}
+
+@api_router.get("/admin/analytics/overview")
+async def analytics_overview(admin: dict = Depends(require_role(["super_admin", "content_admin"])), days: int = 30):
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+    total_events = await db.analytics_events.count_documents({"timestamp": {"$gte": cutoff}})
+    total_users = await db.user_profiles.count_documents({})
+    active_users = await db.analytics_events.distinct("user_id", {"timestamp": {"$gte": cutoff}})
+
+    # Content popularity
+    popular_content = await db.analytics_events.aggregate([
+        {"$match": {"timestamp": {"$gte": cutoff}, "content_id": {"$ne": None}}},
+        {"$group": {"_id": "$content_id", "views": {"$sum": 1}, "total_duration": {"$sum": "$duration_seconds"}}},
+        {"$sort": {"views": -1}},
+        {"$limit": 10}
+    ]).to_list(10)
+
+    # Enrich with content names
+    for item in popular_content:
+        if item["_id"]:
+            try:
+                content = await db.content_items.find_one({"_id": ObjectId(item["_id"])}, {"title_en": 1, "title_hi": 1, "category": 1})
+                item["title_en"] = content.get("title_en", "") if content else ""
+                item["title_hi"] = content.get("title_hi", "") if content else ""
+                item["category"] = content.get("category", "") if content else ""
+            except Exception:
+                item["title_en"] = "Unknown"
+
+    # Event type breakdown
+    event_types = await db.analytics_events.aggregate([
+        {"$match": {"timestamp": {"$gte": cutoff}}},
+        {"$group": {"_id": "$event_type", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}}
+    ]).to_list(20)
+
+    # Daily active users trend
+    daily_trend = await db.analytics_events.aggregate([
+        {"$match": {"timestamp": {"$gte": cutoff}}},
+        {"$group": {"_id": {"$substr": ["$timestamp", 0, 10]}, "events": {"$sum": 1}, "users": {"$addToSet": "$user_id"}}},
+        {"$project": {"date": "$_id", "events": 1, "unique_users": {"$size": "$users"}}},
+        {"$sort": {"_id": 1}}
+    ]).to_list(60)
+
+    # Platform breakdown
+    platforms = await db.analytics_events.aggregate([
+        {"$match": {"timestamp": {"$gte": cutoff}}},
+        {"$group": {"_id": "$platform", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}}
+    ]).to_list(10)
+
+    # Location data
+    locations = await db.analytics_events.aggregate([
+        {"$match": {"timestamp": {"$gte": cutoff}, "location.country": {"$exists": True, "$ne": ""}}},
+        {"$group": {"_id": "$location.country", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+        {"$limit": 10}
+    ]).to_list(10)
+
+    # Category popularity
+    category_stats = await db.analytics_events.aggregate([
+        {"$match": {"timestamp": {"$gte": cutoff}, "content_type": {"$ne": None}}},
+        {"$group": {"_id": "$content_type", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}}
+    ]).to_list(10)
+
+    return {
+        "period_days": days,
+        "total_events": total_events,
+        "total_users": total_users,
+        "active_users": len(active_users),
+        "popular_content": popular_content,
+        "event_types": [{"type": e["_id"] or "unknown", "count": e["count"]} for e in event_types],
+        "daily_trend": [{"date": d.get("date", d.get("_id")), "events": d["events"], "users": d.get("unique_users", 0)} for d in daily_trend],
+        "platforms": [{"name": p["_id"] or "unknown", "count": p["count"]} for p in platforms],
+        "locations": [{"country": l["_id"], "count": l["count"]} for l in locations],
+        "category_stats": [{"category": c["_id"] or "unknown", "count": c["count"]} for c in category_stats],
+    }
+
+# ===================== STREAKS & GAMIFICATION =====================
+
+@api_router.post("/user/streak/check-in")
+async def streak_checkin(request: Request):
+    body = await request.json()
+    user_id = body.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    streak = await db.user_streaks.find_one({"user_id": user_id})
+    if not streak:
+        streak = {"user_id": user_id, "current_streak": 1, "longest_streak": 1, "last_checkin": today, "total_days": 1, "badges": [], "checkin_dates": [today]}
+        await db.user_streaks.insert_one(streak)
+    else:
+        last = streak.get("last_checkin", "")
+        if last == today:
+            pass  # Already checked in today
+        elif last == yesterday:
+            new_streak = streak.get("current_streak", 0) + 1
+            longest = max(streak.get("longest_streak", 0), new_streak)
+            dates = streak.get("checkin_dates", [])
+            dates.append(today)
+            badges = streak.get("badges", [])
+            if new_streak >= 7 and "week_warrior" not in badges:
+                badges.append("week_warrior")
+            if new_streak >= 30 and "month_master" not in badges:
+                badges.append("month_master")
+            if new_streak >= 108 and "mala_complete" not in badges:
+                badges.append("mala_complete")
+            if new_streak >= 365 and "year_yogi" not in badges:
+                badges.append("year_yogi")
+            await db.user_streaks.update_one({"user_id": user_id}, {"$set": {"current_streak": new_streak, "longest_streak": longest, "last_checkin": today, "total_days": streak.get("total_days", 0) + 1, "badges": badges, "checkin_dates": dates[-365:]}})
+        else:
+            dates = streak.get("checkin_dates", [])
+            dates.append(today)
+            await db.user_streaks.update_one({"user_id": user_id}, {"$set": {"current_streak": 1, "last_checkin": today, "total_days": streak.get("total_days", 0) + 1, "checkin_dates": dates[-365:]}})
+
+    updated = await db.user_streaks.find_one({"user_id": user_id}, {"_id": 0})
+    return updated
+
+@api_router.get("/user/streak/{user_id}")
+async def get_streak(user_id: str):
+    streak = await db.user_streaks.find_one({"user_id": user_id}, {"_id": 0})
+    if not streak:
+        return {"user_id": user_id, "current_streak": 0, "longest_streak": 0, "total_days": 0, "badges": []}
+    return streak
+
+@api_router.get("/admin/analytics/streaks")
+async def analytics_streaks(admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    total = await db.user_streaks.count_documents({})
+    active_today = await db.user_streaks.count_documents({"last_checkin": datetime.now(timezone.utc).strftime("%Y-%m-%d")})
+
+    top_streakers = await db.user_streaks.find({}).sort("current_streak", -1).limit(10).to_list(10)
+    streak_distribution = await db.user_streaks.aggregate([
+        {"$bucket": {"groupBy": "$current_streak", "boundaries": [0, 1, 7, 30, 108, 365, 9999], "default": "other", "output": {"count": {"$sum": 1}}}}
+    ]).to_list(10)
+
+    badge_counts = await db.user_streaks.aggregate([
+        {"$unwind": "$badges"},
+        {"$group": {"_id": "$badges", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}}
+    ]).to_list(10)
+
+    return {
+        "total_users_with_streaks": total,
+        "active_today": active_today,
+        "top_streakers": [serialize_doc(s) for s in top_streakers],
+        "streak_distribution": streak_distribution,
+        "badge_counts": [{"badge": b["_id"], "count": b["count"]} for b in badge_counts]
+    }
+
+# ===================== AUDIT TRAIL & SECURITY DASHBOARD =====================
+
+@api_router.get("/admin/audit-trail")
+async def get_audit_trail(admin: dict = Depends(require_role(["super_admin"])), limit: int = 100, action: str = ""):
+    query = {}
+    if action:
+        query["action"] = action
+    trail = await db.audit_trail.find(query).sort("timestamp", -1).limit(limit).to_list(limit)
+    return [serialize_doc(t) for t in trail]
+
+@api_router.get("/admin/security/dashboard")
+async def security_dashboard(admin: dict = Depends(require_role(["super_admin"]))):
+    now = datetime.now(timezone.utc)
+    last_24h = (now - timedelta(hours=24)).isoformat()
+    last_7d = (now - timedelta(days=7)).isoformat()
+
+    # Login attempts (last 24h)
+    login_success = await db.audit_trail.count_documents({"action": "login_success", "timestamp": {"$gte": last_24h}})
+    login_failed = await db.audit_trail.count_documents({"action": "login_failed", "timestamp": {"$gte": last_24h}})
+    rate_limited = await db.audit_trail.count_documents({"action": "rate_limit_exceeded", "timestamp": {"$gte": last_24h}})
+
+    # Security events (last 7 days)
+    security_events = await db.security_events.find({"timestamp": {"$gte": last_7d}}).sort("timestamp", -1).limit(50).to_list(50)
+
+    # Suspicious IPs (multiple failed logins)
+    suspicious_ips = await db.audit_trail.aggregate([
+        {"$match": {"action": "login_failed", "timestamp": {"$gte": last_7d}}},
+        {"$group": {"_id": "$ip_address", "count": {"$sum": 1}, "last_attempt": {"$max": "$timestamp"}}},
+        {"$match": {"count": {"$gte": 3}}},
+        {"$sort": {"count": -1}},
+        {"$limit": 20}
+    ]).to_list(20)
+
+    # Recent admin actions
+    recent_actions = await db.audit_trail.find({"action": {"$nin": ["login_success", "login_failed", "rate_limit_exceeded"]}}).sort("timestamp", -1).limit(20).to_list(20)
+
+    # Active sessions (admins who logged in recently)
+    active_admins = await db.admin_users.find({"last_login_at": {"$gte": last_24h}}, {"password_hash": 0}).to_list(20)
+
+    # Auth events by hour (last 24h)
+    hourly_events = await db.audit_trail.aggregate([
+        {"$match": {"timestamp": {"$gte": last_24h}, "action": {"$in": ["login_success", "login_failed"]}}},
+        {"$group": {"_id": {"$substr": ["$timestamp", 11, 2]}, "success": {"$sum": {"$cond": [{"$eq": ["$action", "login_success"]}, 1, 0]}}, "failed": {"$sum": {"$cond": [{"$eq": ["$action", "login_failed"]}, 1, 0]}}}},
+        {"$sort": {"_id": 1}}
+    ]).to_list(24)
+
+    # Token blacklist count
+    blacklisted_tokens = await db.token_blacklist.count_documents({})
+
+    return {
+        "last_24h": {
+            "login_success": login_success,
+            "login_failed": login_failed,
+            "rate_limited": rate_limited,
+            "total_auth_events": login_success + login_failed + rate_limited
+        },
+        "security_events": [serialize_doc(e) for e in security_events],
+        "suspicious_ips": [{"ip": s["_id"], "attempts": s["count"], "last_attempt": s["last_attempt"]} for s in suspicious_ips],
+        "recent_admin_actions": [serialize_doc(a) for a in recent_actions],
+        "active_admins": [serialize_doc(a) for a in active_admins],
+        "hourly_auth_trend": [{"hour": h["_id"], "success": h["success"], "failed": h["failed"]} for h in hourly_events],
+        "blacklisted_tokens": blacklisted_tokens,
+    }
+
+@api_router.post("/admin/security/block-ip")
+async def block_ip(request: Request, admin: dict = Depends(require_role(["super_admin"]))):
+    body = await request.json()
+    ip = body.get("ip")
+    reason = body.get("reason", "Manual block")
+    if not ip:
+        raise HTTPException(status_code=400, detail="IP required")
+    await db.blocked_ips.update_one({"ip": ip}, {"$set": {"ip": ip, "reason": reason, "blocked_by": admin["_id"], "blocked_at": datetime.now(timezone.utc).isoformat()}}, upsert=True)
+    await log_audit("ip_blocked", admin_id=admin["_id"], admin_email=admin.get("email"), ip=admin.get("_ip", ""), details={"blocked_ip": ip, "reason": reason})
+    return {"message": f"IP {ip} blocked"}
+
+@api_router.get("/admin/security/blocked-ips")
+async def list_blocked_ips(admin: dict = Depends(require_role(["super_admin"]))):
+    ips = await db.blocked_ips.find({}).to_list(100)
+    return [serialize_doc(i) for i in ips]
+
+@api_router.delete("/admin/security/blocked-ips/{ip}")
+async def unblock_ip(ip: str, admin: dict = Depends(require_role(["super_admin"]))):
+    await db.blocked_ips.delete_one({"ip": ip})
+    await log_audit("ip_unblocked", admin_id=admin["_id"], ip=admin.get("_ip", ""), details={"unblocked_ip": ip})
+    return {"message": f"IP {ip} unblocked"}
+
+# ===================== BLOG POSTS =====================
+
+@api_router.get("/blog/posts")
+async def list_blog_posts(status: str = "published", skip: int = 0, limit: int = 20):
+    query = {"status": status} if status else {}
+    posts = await db.blog_posts.find(query, {"content": 0}).sort("published_at", -1).skip(skip).limit(limit).to_list(limit)
+    total = await db.blog_posts.count_documents(query)
+    return {"posts": [serialize_doc(p) for p in posts], "total": total}
+
+@api_router.get("/blog/posts/{slug}")
+async def get_blog_post(slug: str):
+    post = await db.blog_posts.find_one({"slug": slug, "status": "published"})
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+    await db.blog_posts.update_one({"_id": post["_id"]}, {"$inc": {"views": 1}})
+    return serialize_doc(post)
+
+@api_router.post("/admin/blog/posts")
+async def create_blog_post(request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    body = await request.json()
+    slug = body.get("title", "post").lower().replace(" ", "-").replace("'", "")[:80]
+    # Ensure unique slug
+    existing = await db.blog_posts.find_one({"slug": slug})
+    if existing:
+        slug = f"{slug}-{str(uuid.uuid4())[:6]}"
+    doc = {
+        "title": body.get("title", ""),
+        "slug": slug,
+        "excerpt": body.get("excerpt", ""),
+        "content": body.get("content", ""),
+        "cover_image": body.get("cover_image", ""),
+        "category": body.get("category", "general"),
+        "tags": body.get("tags", []),
+        "author_name": admin.get("name", "Admin"),
+        "author_id": admin["_id"],
+        "status": body.get("status", "draft"),
+        "views": 0,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "published_at": datetime.now(timezone.utc).isoformat() if body.get("status") == "published" else None,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    result = await db.blog_posts.insert_one(doc)
+    doc["_id"] = str(result.inserted_id)
+    await log_audit("blog_post_created", admin_id=admin["_id"], admin_email=admin.get("email"), ip=admin.get("_ip", ""), details={"title": doc["title"], "slug": slug})
+    return doc
+
+@api_router.put("/admin/blog/posts/{post_id}")
+async def update_blog_post(post_id: str, request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    body = await request.json()
+    body.pop("_id", None)
+    body["updated_at"] = datetime.now(timezone.utc).isoformat()
+    if body.get("status") == "published" and not body.get("published_at"):
+        body["published_at"] = datetime.now(timezone.utc).isoformat()
+    await db.blog_posts.update_one({"_id": ObjectId(post_id)}, {"$set": body})
+    updated = await db.blog_posts.find_one({"_id": ObjectId(post_id)})
+    return serialize_doc(updated)
+
+@api_router.delete("/admin/blog/posts/{post_id}")
+async def delete_blog_post(post_id: str, admin: dict = Depends(require_role(["super_admin"]))):
+    await db.blog_posts.delete_one({"_id": ObjectId(post_id)})
+    return {"message": "Deleted"}
+
+@api_router.get("/admin/blog/posts")
+async def admin_list_blog_posts(admin: dict = Depends(require_role(["super_admin", "content_admin", "moderator"]))):
+    posts = await db.blog_posts.find({}).sort("created_at", -1).to_list(200)
+    return [serialize_doc(p) for p in posts]
+
+# ===================== CMS PAGES =====================
+
+@api_router.get("/pages/{slug}")
+async def get_cms_page(slug: str):
+    page = await db.cms_pages.find_one({"slug": slug, "is_active": True})
+    if not page:
+        raise HTTPException(status_code=404, detail="Page not found")
+    return serialize_doc(page)
+
+@api_router.get("/pages")
+async def list_cms_pages():
+    pages = await db.cms_pages.find({"is_active": True}, {"content": 0}).sort("sort_order", 1).to_list(50)
+    return [serialize_doc(p) for p in pages]
+
+@api_router.post("/admin/pages")
+async def create_cms_page(request: Request, admin: dict = Depends(require_role(["super_admin"]))):
+    body = await request.json()
+    slug = body.get("slug") or body.get("title", "page").lower().replace(" ", "-")[:60]
+    doc = {
+        "title": body.get("title", ""),
+        "slug": slug,
+        "content": body.get("content", ""),
+        "meta_description": body.get("meta_description", ""),
+        "show_in_menu": body.get("show_in_menu", False),
+        "menu_position": body.get("menu_position", "footer"),
+        "sort_order": body.get("sort_order", 0),
+        "is_active": True,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    result = await db.cms_pages.insert_one(doc)
+    doc["_id"] = str(result.inserted_id)
+    return doc
+
+@api_router.put("/admin/pages/{page_id}")
+async def update_cms_page(page_id: str, request: Request, admin: dict = Depends(require_role(["super_admin"]))):
+    body = await request.json()
+    body.pop("_id", None)
+    body["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.cms_pages.update_one({"_id": ObjectId(page_id)}, {"$set": body})
+    updated = await db.cms_pages.find_one({"_id": ObjectId(page_id)})
+    return serialize_doc(updated)
+
+@api_router.delete("/admin/pages/{page_id}")
+async def delete_cms_page(page_id: str, admin: dict = Depends(require_role(["super_admin"]))):
+    await db.cms_pages.delete_one({"_id": ObjectId(page_id)})
+    return {"message": "Deleted"}
+
+@api_router.get("/admin/pages")
+async def admin_list_pages(admin: dict = Depends(require_role(["super_admin"]))):
+    pages = await db.cms_pages.find({}).sort("sort_order", 1).to_list(50)
+    return [serialize_doc(p) for p in pages]
+
+# ===================== PUBLIC VEDACHAT (5 Questions Limit) =====================
+
+@api_router.post("/public/ask")
+async def public_vedachat(request: Request):
+    body = await request.json()
+    question = body.get("question", "")
+    if not question:
+        raise HTTPException(status_code=400, detail="Question is required")
+
+    ip = get_client_ip(request)
+    session_id = body.get("session_id", ip)
+    identifier = f"public:{session_id}"
+
+    # Check rate limit (5 questions per session/IP)
+    limit_doc = await db.public_chat_limits.find_one({"identifier": identifier})
+    if limit_doc and limit_doc.get("count", 0) >= 5:
+        return {"limited": True, "message": "You've used all 5 free questions! Download the Sanatan Saathi app for unlimited access to VedaChat.", "remaining": 0}
+
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        chat = LlmChat(
+            api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
+            session_id=f"public-{identifier}",
+            system_message="""You are VedaChat, a knowledgeable spiritual guide for Sanatan Dharma. Answer questions about Hindu scriptures, philosophy, rituals, and spiritual practices. Always cite scripture references. Keep answers concise (2-3 paragraphs max) for the web widget."""
+        )
+        chat.with_model("anthropic", "claude-sonnet-4-5-20250929")
+        ai_response = await chat.send_message(UserMessage(text=question))
+
+        # Update limit
+        await db.public_chat_limits.update_one(
+            {"identifier": identifier},
+            {"$inc": {"count": 1}, "$set": {"last_question_at": datetime.now(timezone.utc).isoformat()}},
+            upsert=True
+        )
+        current_count = (limit_doc.get("count", 0) if limit_doc else 0) + 1
+
+        return {"answer": ai_response, "remaining": max(0, 5 - current_count), "limited": False}
+    except Exception as e:
+        logger.error(f"Public VedaChat error: {e}")
+        raise HTTPException(status_code=500, detail="Unable to process your question right now")
+
+# ===================== PUBLIC HOMEPAGE DATA =====================
+
+@api_router.get("/public/homepage")
+async def public_homepage():
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    panchang = await db.panchang.find_one({"date": today})
+
+    # Featured content by category
+    categories_data = {}
+    for cat in ["chalisa", "vedic_mantra", "ashtakam", "sahasranama", "katha", "arti"]:
+        items = await db.content_items.find({"category": cat, "status": "published"}, {"_id": 1, "title_hi": 1, "title_en": 1, "deity": 1, "total_verses": 1}).sort("sort_order", 1).limit(4).to_list(4)
+        categories_data[cat] = [serialize_doc(i) for i in items]
+
+    granths = await db.granth_books.find({"is_active": True}).sort("sort_order", 1).to_list(5)
+    vedas = await db.veda_books.find({"is_active": True}).sort("sort_order", 1).to_list(5)
+    recent_blogs = await db.blog_posts.find({"status": "published"}, {"content": 0}).sort("published_at", -1).limit(3).to_list(3)
+    menu_pages = await db.cms_pages.find({"is_active": True, "show_in_menu": True}, {"content": 0}).sort("sort_order", 1).to_list(20)
+
+    total_content = await db.content_items.count_documents({"status": "published"})
+    total_verses = 0
+    # Rough verse count
+    verse_agg = await db.content_items.aggregate([{"$match": {"status": "published"}}, {"$group": {"_id": None, "total": {"$sum": "$total_verses"}}}]).to_list(1)
+    if verse_agg:
+        total_verses = verse_agg[0].get("total", 0)
+
+    return {
+        "panchang": serialize_doc(panchang) if panchang else None,
+        "categories": categories_data,
+        "granths": [serialize_doc(g) for g in granths],
+        "vedas": [serialize_doc(v) for v in vedas],
+        "recent_blogs": [serialize_doc(b) for b in recent_blogs],
+        "menu_pages": [serialize_doc(p) for p in menu_pages],
+        "stats": {"total_content": total_content, "total_verses": total_verses, "total_granths": len(granths), "total_vedas": len(vedas)},
+    }
+
+# ===================== OFFLINE DATA BUNDLE =====================
+
+@api_router.get("/offline/bundle")
+async def offline_bundle():
+    """Returns essential data for offline caching in mobile app"""
+    categories = await db.content_items.find({"status": "published"}, {"_id": 1, "category": 1, "title_hi": 1, "title_en": 1, "deity": 1, "total_verses": 1, "sort_order": 1}).sort("sort_order", 1).to_list(200)
+    panchang = await db.panchang.find({}).sort("date", 1).limit(30).to_list(30)
+    home_cats = [
+        {"key": "vedic_mantra", "title_hi": "वैदिक मंत्र", "title_en": "Vedic Mantras"},
+        {"key": "chalisa", "title_hi": "चालीसा", "title_en": "Chalisa"},
+        {"key": "ashtakam", "title_hi": "अष्टकम्", "title_en": "Ashtakam"},
+        {"key": "sahasranama", "title_hi": "सहस्रनाम", "title_en": "Sahasranama"},
+        {"key": "katha", "title_hi": "कथा एवं पूजा", "title_en": "Katha & Puja"},
+        {"key": "arti", "title_hi": "आरती संग्रह", "title_en": "Arti Sangrah"},
+        {"key": "nama_ramayanam", "title_hi": "नाम रामायणम्", "title_en": "Nama Ramayanam"},
+    ]
+    return {
+        "content_items": [serialize_doc(c) for c in categories],
+        "panchang": [serialize_doc(p) for p in panchang],
+        "categories": home_cats,
+        "cached_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+@api_router.get("/offline/content/{item_id}")
+async def offline_content(item_id: str):
+    """Full content with verses and meanings for offline caching"""
+    item = await db.content_items.find_one({"_id": ObjectId(item_id)})
+    if not item:
+        raise HTTPException(status_code=404, detail="Not found")
+    verses = await db.content_verses.find({"item_id": item_id}, {"audio_base64": 0}).sort("sort_order", 1).to_list(500)
+    meanings = {}
+    for v in verses:
+        vid = str(v["_id"])
+        m = await db.verse_meanings.find({"verse_id": vid}).to_list(20)
+        meanings[vid] = [serialize_doc(x) for x in m]
+    return {
+        "item": serialize_doc(item),
+        "verses": [serialize_doc(v) for v in verses],
+        "meanings": meanings,
+    }
+
+# ===================== SEED DATA =====================
+
+async def seed_data():
+    # Seed Super Admin
+    admin_email = os.environ.get("ADMIN_EMAIL", "admin@sanatansaathi.com")
+    admin_password = os.environ.get("ADMIN_PASSWORD", "SanatanAdmin@123")
+    existing = await db.admin_users.find_one({"email": admin_email})
+    if not existing:
+        await db.admin_users.insert_one({
+            "email": admin_email,
+            "password_hash": hash_password(admin_password),
+            "name": "Super Admin",
+            "role": "super_admin",
+            "is_active": True,
+            "created_by": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "last_login_at": None
+        })
+        logger.info(f"Super Admin created: {admin_email}")
+    elif not verify_password(admin_password, existing["password_hash"]):
+        await db.admin_users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_password)}})
+        logger.info("Super Admin password updated")
+
+    # Seed sample content if empty
+    if await db.content_items.count_documents({}) == 0:
+        sample_content = [
+            {
+                "category": "chalisa", "slug": "hanuman-chalisa", "title_hi": "हनुमान चालीसा", "title_en": "Hanuman Chalisa",
+                "deity": "Hanuman", "deity_hi": "हनुमान", "description_hi": "श्री हनुमान चालीसा - तुलसीदास रचित",
+                "description_en": "Hanuman Chalisa by Tulsidas - 40 verses praising Lord Hanuman",
+                "thumbnail_url": "", "audio_url": "", "has_beginner_mode": True, "has_expert_mode": True,
+                "total_verses": 40, "sort_order": 1, "is_active": True, "is_premium": False,
+                "tags": ["daily", "popular", "hanuman"], "supported_languages": ["hi", "en", "sa"],
+                "like_count": 0, "status": "published",
+                "created_at": datetime.now(timezone.utc).isoformat(), "updated_at": datetime.now(timezone.utc).isoformat()
+            },
+            {
+                "category": "chalisa", "slug": "shiv-chalisa", "title_hi": "शिव चालीसा", "title_en": "Shiv Chalisa",
+                "deity": "Shiva", "deity_hi": "शिव", "description_hi": "भगवान शिव की स्तुति",
+                "description_en": "Shiv Chalisa - 40 verses praising Lord Shiva",
+                "thumbnail_url": "", "audio_url": "", "has_beginner_mode": True, "has_expert_mode": True,
+                "total_verses": 40, "sort_order": 2, "is_active": True, "is_premium": False,
+                "tags": ["daily", "shiva"], "supported_languages": ["hi", "en", "sa"],
+                "like_count": 0, "status": "published",
+                "created_at": datetime.now(timezone.utc).isoformat(), "updated_at": datetime.now(timezone.utc).isoformat()
+            },
+            {
+                "category": "vedic_mantra", "slug": "gayatri-mantra", "title_hi": "गायत्री मंत्र", "title_en": "Gayatri Mantra",
+                "deity": "Savitri", "deity_hi": "सावित्री", "description_hi": "वेद माता गायत्री मंत्र",
+                "description_en": "The most sacred Gayatri Mantra from Rig Veda",
+                "thumbnail_url": "", "audio_url": "", "has_beginner_mode": True, "has_expert_mode": True,
+                "total_verses": 1, "sort_order": 1, "is_active": True, "is_premium": False,
+                "tags": ["daily", "morning", "vedic"], "supported_languages": ["hi", "en", "sa"],
+                "like_count": 0, "status": "published",
+                "created_at": datetime.now(timezone.utc).isoformat(), "updated_at": datetime.now(timezone.utc).isoformat()
+            },
+            {
+                "category": "vedic_mantra", "slug": "mahamrityunjaya-mantra", "title_hi": "महामृत्युंजय मंत्र", "title_en": "Mahamrityunjaya Mantra",
+                "deity": "Shiva", "deity_hi": "शिव", "description_hi": "मृत्यु पर विजय का मंत्र",
+                "description_en": "The great death-conquering mantra from Rig Veda",
+                "thumbnail_url": "", "audio_url": "", "has_beginner_mode": True, "has_expert_mode": True,
+                "total_verses": 1, "sort_order": 2, "is_active": True, "is_premium": False,
+                "tags": ["daily", "healing", "shiva"], "supported_languages": ["hi", "en", "sa"],
+                "like_count": 0, "status": "published",
+                "created_at": datetime.now(timezone.utc).isoformat(), "updated_at": datetime.now(timezone.utc).isoformat()
+            },
+            {
+                "category": "ashtakam", "slug": "shiva-ashtakam", "title_hi": "शिवाष्टकम्", "title_en": "Shivashtakam",
+                "deity": "Shiva", "deity_hi": "शिव", "description_hi": "शिव की स्तुति में आठ श्लोक",
+                "description_en": "Eight verses in praise of Lord Shiva",
+                "thumbnail_url": "", "audio_url": "", "has_beginner_mode": True, "has_expert_mode": True,
+                "total_verses": 8, "sort_order": 1, "is_active": True, "is_premium": False,
+                "tags": ["shiva", "ashtakam"], "supported_languages": ["hi", "en", "sa"],
+                "like_count": 0, "status": "published",
+                "created_at": datetime.now(timezone.utc).isoformat(), "updated_at": datetime.now(timezone.utc).isoformat()
+            },
+            {
+                "category": "sahasranama", "slug": "vishnu-sahasranama", "title_hi": "विष्णु सहस्रनाम", "title_en": "Vishnu Sahasranama",
+                "deity": "Vishnu", "deity_hi": "विष्णु", "description_hi": "भगवान विष्णु के एक हज़ार नाम",
+                "description_en": "1000 names of Lord Vishnu from Mahabharata",
+                "thumbnail_url": "", "audio_url": "", "has_beginner_mode": True, "has_expert_mode": True,
+                "total_verses": 107, "sort_order": 1, "is_active": True, "is_premium": False,
+                "tags": ["vishnu", "daily"], "supported_languages": ["hi", "en", "sa"],
+                "like_count": 0, "status": "published",
+                "created_at": datetime.now(timezone.utc).isoformat(), "updated_at": datetime.now(timezone.utc).isoformat()
+            },
+        ]
+        await db.content_items.insert_many(sample_content)
+        logger.info(f"Seeded {len(sample_content)} content items")
+
+        # Seed sample verses for Hanuman Chalisa
+        hanuman = await db.content_items.find_one({"slug": "hanuman-chalisa"})
+        if hanuman:
+            hid = str(hanuman["_id"])
+            sample_verses = [
+                {"item_id": hid, "verse_num": 1, "verse_type": "doha", "sanskrit_text": "श्रीगुरु चरन सरोज रज, निज मनु मुकुरु सुधारि।\nबरनउँ रघुबर बिमल जसु, जो दायकु फल चारि।।", "transliteration": "Shri Guru Charan Saroj Raj, Nij Manu Mukuru Sudhari.\nBaranau Raghubar Bimal Jasu, Jo Dayaku Phal Chari.", "sort_order": 1, "is_active": True},
+                {"item_id": hid, "verse_num": 2, "verse_type": "doha", "sanskrit_text": "बुद्धिहीन तनु जानिके, सुमिरौं पवन कुमार।\nबल बुद्धि विद्या देहु मोहिं, हरहु कलेस विकार।।", "transliteration": "Buddhiheen Tanu Jaanike, Sumirau Pawan Kumar.\nBal Buddhi Vidya Dehu Mohi, Harahu Kalesh Vikar.", "sort_order": 2, "is_active": True},
+                {"item_id": hid, "verse_num": 3, "verse_type": "chaupai", "sanskrit_text": "जय हनुमान ज्ञान गुन सागर।\nजय कपीस तिहुँ लोक उजागर।।", "transliteration": "Jai Hanuman Gyan Gun Sagar.\nJai Kapees Tihun Lok Ujagar.", "sort_order": 3, "is_active": True},
+                {"item_id": hid, "verse_num": 4, "verse_type": "chaupai", "sanskrit_text": "राम दूत अतुलित बल धामा।\nअंजनि पुत्र पवनसुत नामा।।", "transliteration": "Ram Doot Atulit Bal Dhama.\nAnjani Putra Pawansut Nama.", "sort_order": 4, "is_active": True},
+                {"item_id": hid, "verse_num": 5, "verse_type": "chaupai", "sanskrit_text": "महाबीर बिक्रम बजरंगी।\nकुमति निवार सुमति के संगी।।", "transliteration": "Mahabir Bikram Bajrangi.\nKumati Nivar Sumati Ke Sangi.", "sort_order": 5, "is_active": True},
+            ]
+            await db.content_verses.insert_many(sample_verses)
+
+            # Seed verse meanings
+            verses = await db.content_verses.find({"item_id": hid}).to_list(5)
+            meanings = [
+                {"verse_id": str(verses[0]["_id"]), "language": "hi", "meaning": "गुरु महाराज के चरण कमलों की धूलि से अपने मन रूपी दर्पण को स्वच्छ करके, श्री रघुवीर के निर्मल यश का वर्णन करता हूँ, जो चारों फल देने वाला है।", "word_breakdown": [{"word": "श्रीगुरु", "meaning_hi": "श्री गुरु", "meaning_en": "Revered Guru"}, {"word": "चरन", "meaning_hi": "चरण", "meaning_en": "Feet"}, {"word": "सरोज", "meaning_hi": "कमल", "meaning_en": "Lotus"}, {"word": "रज", "meaning_hi": "धूल", "meaning_en": "Dust"}]},
+                {"verse_id": str(verses[0]["_id"]), "language": "en", "meaning": "With the dust of Guru's lotus feet, I cleanse the mirror of my mind. I describe the unblemished glory of Sri Ramachandra, who bestows the four fruits of life.", "word_breakdown": []},
+                {"verse_id": str(verses[2]["_id"]), "language": "hi", "meaning": "हे हनुमान जी! आप ज्ञान और गुणों के सागर हैं। हे कपीश्वर! तीनों लोकों में आपकी कीर्ति प्रकाशित है।", "word_breakdown": []},
+                {"verse_id": str(verses[2]["_id"]), "language": "en", "meaning": "Victory to Hanuman, ocean of wisdom and virtue. Victory to the Lord of monkeys, who illuminates all three worlds.", "word_breakdown": []},
+            ]
+            await db.verse_meanings.insert_many(meanings)
+            logger.info("Seeded Hanuman Chalisa verses and meanings")
+
+    # Seed Granth books
+    if await db.granth_books.count_documents({}) == 0:
+        granths = [
+            {"title_hi": "श्रीमद्भगवद्गीता", "title_en": "Bhagavad Gita", "slug": "bhagavad-gita", "description_hi": "भगवान श्रीकृष्ण द्वारा अर्जुन को दिया गया दिव्य उपदेश", "description_en": "The divine discourse by Lord Krishna to Arjuna on the battlefield of Kurukshetra", "thumbnail_url": "", "total_chapters": 18, "total_verses": 700, "sort_order": 1, "is_active": True},
+            {"title_hi": "श्रीरामचरितमानस", "title_en": "Ramcharitmanas", "slug": "ramcharitmanas", "description_hi": "गोस्वामी तुलसीदास कृत श्री राम की जीवन गाथा", "description_en": "The epic poem by Tulsidas narrating the life of Lord Rama", "thumbnail_url": "", "total_chapters": 7, "total_verses": 1073, "sort_order": 2, "is_active": True},
+            {"title_hi": "महाभारत", "title_en": "Mahabharata", "slug": "mahabharata", "description_hi": "महर्षि वेदव्यास रचित विश्व का सबसे बड़ा महाकाव्य", "description_en": "The world's greatest epic by Sage Vedavyasa", "thumbnail_url": "", "total_chapters": 18, "total_verses": 100000, "sort_order": 3, "is_active": True},
+        ]
+        await db.granth_books.insert_many(granths)
+        logger.info("Seeded Granth books")
+
+    # Seed Veda books
+    if await db.veda_books.count_documents({}) == 0:
+        vedas = [
+            {"title_hi": "ऋग्वेद", "title_en": "Rig Veda", "category": "veda", "sub_type": "rig", "description_hi": "सबसे प्राचीन वेद - ज्ञान का वेद", "description_en": "The oldest Veda - Veda of Knowledge", "total_chapters": 10, "sort_order": 1, "is_active": True, "parsing_status": "pending"},
+            {"title_hi": "सामवेद", "title_en": "Sama Veda", "category": "veda", "sub_type": "sama", "description_hi": "संगीत का वेद", "description_en": "The Veda of Melodies", "total_chapters": 2, "sort_order": 2, "is_active": True, "parsing_status": "pending"},
+            {"title_hi": "यजुर्वेद", "title_en": "Yajur Veda", "category": "veda", "sub_type": "yajur", "description_hi": "यज्ञ विधि का वेद", "description_en": "The Veda of Rituals", "total_chapters": 40, "sort_order": 3, "is_active": True, "parsing_status": "pending"},
+            {"title_hi": "अथर्ववेद", "title_en": "Atharva Veda", "category": "veda", "sub_type": "atharva", "description_hi": "तंत्र और मंत्र का वेद", "description_en": "The Veda of Procedures", "total_chapters": 20, "sort_order": 4, "is_active": True, "parsing_status": "pending"},
+        ]
+        await db.veda_books.insert_many(vedas)
+        logger.info("Seeded Veda books")
+
+    # Seed Kathas
+    if await db.katha_items.count_documents({}) == 0:
+        kathas = [
+            {"title_hi": "सत्यनारायण कथा", "title_en": "Satyanarayan Katha", "deity": "Vishnu", "deity_hi": "विष्णु", "intro_text_hi": "श्री सत्यनारायण भगवान की पावन कथा", "intro_text_en": "The sacred story of Lord Satyanarayan", "puja_vidhi": [{"step": 1, "text_hi": "स्नान करें और शुद्ध वस्त्र धारण करें", "text_en": "Take bath and wear clean clothes"}, {"step": 2, "text_hi": "पूजा स्थल को गंगाजल से शुद्ध करें", "text_en": "Purify the puja area with Ganga water"}], "samagri": [{"item_hi": "अक्षत (चावल)", "item_en": "Rice", "quantity": "100g"}, {"item_hi": "हल्दी", "item_en": "Turmeric", "quantity": "1 packet"}, {"item_hi": "कुमकुम", "item_en": "Kumkum", "quantity": "1 packet"}], "total_chapters": 5, "sort_order": 1, "is_active": True, "status": "published"},
+            {"title_hi": "श्रीमद् भागवत कथा", "title_en": "Shrimad Bhagwat Katha", "deity": "Vishnu", "deity_hi": "विष्णु", "intro_text_hi": "भगवान विष्णु के दस अवतारों की कथा", "intro_text_en": "Stories of ten avatars of Lord Vishnu", "puja_vidhi": [], "samagri": [], "total_chapters": 12, "sort_order": 2, "is_active": True, "status": "published"},
+        ]
+        await db.katha_items.insert_many(kathas)
+        logger.info("Seeded Kathas")
+
+    # Seed Artis
+    if await db.arti_items.count_documents({}) == 0:
+        artis = [
+            {"title_hi": "ॐ जय जगदीश हरे", "title_en": "Om Jai Jagdish Hare", "deity": "Vishnu", "deity_hi": "विष्णु", "music_url": "", "audio_duration_seconds": 300, "sort_order": 1, "is_active": True, "status": "published"},
+            {"title_hi": "जय गणेश जय गणेश देवा", "title_en": "Jai Ganesh Jai Ganesh Deva", "deity": "Ganesha", "deity_hi": "गणेश", "music_url": "", "audio_duration_seconds": 240, "sort_order": 2, "is_active": True, "status": "published"},
+            {"title_hi": "ॐ जय शिव ओंकारा", "title_en": "Om Jai Shiv Omkara", "deity": "Shiva", "deity_hi": "शिव", "music_url": "", "audio_duration_seconds": 270, "sort_order": 3, "is_active": True, "status": "published"},
+        ]
+        await db.arti_items.insert_many(artis)
+        logger.info("Seeded Artis")
+
+    # Seed Panchang
+    if await db.panchang.count_documents({}) == 0:
+        today = datetime.now(timezone.utc)
+        panchang_entries = []
+        for i in range(7):
+            d = today + timedelta(days=i)
+            panchang_entries.append({
+                "date": d.strftime("%Y-%m-%d"),
+                "tithi": ["शुक्ल प्रतिपदा", "शुक्ल द्वितीया", "शुक्ल तृतीया", "शुक्ल चतुर्थी", "शुक्ल पंचमी", "शुक्ल षष्ठी", "शुक्ल सप्तमी"][i],
+                "nakshatra": ["अश्विनी", "भरणी", "कृत्तिका", "रोहिणी", "मृगशीर्ष", "आर्द्रा", "पुनर्वसु"][i],
+                "yoga": ["विष्कुम्भ", "प्रीति", "आयुष्मान", "सौभाग्य", "शोभन", "अतिगण्ड", "सुकर्मा"][i],
+                "karana": "बव",
+                "sunrise": "06:45",
+                "sunset": "18:15",
+                "rahu_kaal": "10:30-12:00",
+                "festival_name": "" if i != 3 else "संकष्टी चतुर्थी",
+                "festival_name_en": "" if i != 3 else "Sankashti Chaturthi",
+                "is_panchak": False,
+                "is_bhadra": False
+            })
+        await db.panchang.insert_many(panchang_entries)
+        logger.info("Seeded Panchang data")
+
+    # Seed Vrat & Festival data
+    if await db.vrat_festivals.count_documents({}) == 0:
+        vrat_data = [
+            {"date": "", "recurring_day": "monday", "type": "vrat", "name_hi": "सोमवार व्रत", "name_en": "Monday Fast (Somvar Vrat)", "deity": "Shiva", "description_hi": "भगवान शिव की पूजा और व्रत", "description_en": "Fasting for Lord Shiva on Mondays", "linked_content_tags": ["shiva"], "is_active": True},
+            {"date": "", "recurring_day": "tuesday", "type": "vrat", "name_hi": "मंगलवार व्रत", "name_en": "Tuesday Fast (Mangalvar Vrat)", "deity": "Hanuman", "description_hi": "हनुमान जी की पूजा और व्रत", "description_en": "Fasting for Lord Hanuman on Tuesdays", "linked_content_tags": ["hanuman"], "is_active": True},
+            {"date": "", "recurring_day": "thursday", "type": "vrat", "name_hi": "गुरुवार व्रत", "name_en": "Thursday Fast (Guruvar Vrat)", "deity": "Vishnu", "description_hi": "भगवान विष्णु की पूजा और व्रत", "description_en": "Fasting for Lord Vishnu on Thursdays", "linked_content_tags": ["vishnu"], "is_active": True},
+            {"date": "", "recurring_day": "saturday", "type": "vrat", "name_hi": "शनिवार व्रत", "name_en": "Saturday Fast (Shanivar Vrat)", "deity": "Shani", "description_hi": "शनि देव की पूजा और व्रत", "description_en": "Fasting for Lord Shani on Saturdays", "linked_content_tags": ["shani"], "is_active": True},
+            {"date": "2026-03-14", "recurring_day": "", "type": "festival", "name_hi": "महाशिवरात्रि", "name_en": "Maha Shivratri", "deity": "Shiva", "description_hi": "भगवान शिव की महान रात्रि", "description_en": "The Great Night of Lord Shiva", "linked_content_tags": ["shiva"], "is_active": True},
+            {"date": "2026-10-20", "recurring_day": "", "type": "festival", "name_hi": "दीपावली", "name_en": "Diwali", "deity": "Lakshmi", "description_hi": "दीपों का त्योहार", "description_en": "Festival of Lights", "linked_content_tags": ["lakshmi"], "is_active": True},
+            {"date": "2026-10-02", "recurring_day": "", "type": "festival", "name_hi": "नवरात्रि", "name_en": "Navratri", "deity": "Durga", "description_hi": "नौ रातों का उत्सव - माँ दुर्गा की पूजा", "description_en": "Nine Nights Festival - Worship of Goddess Durga", "linked_content_tags": ["durga", "devi"], "is_active": True},
+        ]
+        await db.vrat_festivals.insert_many(vrat_data)
+        logger.info("Seeded Vrat & Festival data")
+
+    # Seed Daily Schedules
+    if await db.daily_schedules.count_documents({}) == 0:
+        # Get content IDs for scheduling
+        hanuman = await db.content_items.find_one({"slug": "hanuman-chalisa"})
+        gayatri = await db.content_items.find_one({"slug": "gayatri-mantra"})
+        shiv = await db.content_items.find_one({"slug": "shiv-chalisa"})
+        schedules = []
+        if hanuman:
+            schedules.append({"schedule_type": "recurring", "day_of_week": "tuesday", "date": "", "content_id": str(hanuman["_id"]), "title": "Tuesday - Hanuman Chalisa", "is_active": True, "created_at": datetime.now(timezone.utc).isoformat()})
+        if gayatri:
+            schedules.append({"schedule_type": "recurring", "day_of_week": "sunday", "date": "", "content_id": str(gayatri["_id"]), "title": "Sunday - Gayatri Mantra", "is_active": True, "created_at": datetime.now(timezone.utc).isoformat()})
+        if shiv:
+            schedules.append({"schedule_type": "recurring", "day_of_week": "monday", "date": "", "content_id": str(shiv["_id"]), "title": "Monday - Shiv Chalisa", "is_active": True, "created_at": datetime.now(timezone.utc).isoformat()})
+        if schedules:
+            await db.daily_schedules.insert_many(schedules)
+            logger.info("Seeded Daily Schedules")
+
+    # Update panchang with vrat info
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    day_name = datetime.now(timezone.utc).strftime("%A").lower()
+    today_panchang = await db.panchang.find_one({"date": today_str})
+    if today_panchang and not today_panchang.get("vrat_name"):
+        vrat = await db.vrat_festivals.find_one({"recurring_day": day_name, "type": "vrat", "is_active": True})
+        if vrat:
+            await db.panchang.update_one({"date": today_str}, {"$set": {"vrat_name": vrat["name_hi"], "vrat_name_en": vrat["name_en"], "vrat_description": vrat["description_en"]}})
+
+    # Seed Blog Posts
+    if await db.blog_posts.count_documents({}) == 0:
+        blogs = [
+            {"title": "The Significance of Hanuman Chalisa in Daily Life", "slug": "significance-of-hanuman-chalisa", "excerpt": "Discover why millions recite Hanuman Chalisa daily and how it can transform your spiritual practice.", "content": "Hanuman Chalisa is one of the most revered prayers in Hinduism. Composed by Goswami Tulsidas in the 16th century, these 40 verses (chalisa) praise Lord Hanuman's devotion, strength, and wisdom.\n\nReciting Hanuman Chalisa daily brings courage, removes obstacles, and strengthens one's connection with the divine. The chalisa describes Hanuman as the ocean of wisdom and virtue who illuminates all three worlds.\n\nKey benefits of daily recitation include: mental peace, protection from negative energies, improved focus and determination, and spiritual growth.", "cover_image": "", "category": "spirituality", "tags": ["hanuman", "chalisa", "daily-practice"], "author_name": "Super Admin", "status": "published", "views": 0, "created_at": datetime.now(timezone.utc).isoformat(), "published_at": datetime.now(timezone.utc).isoformat()},
+            {"title": "Understanding the Gayatri Mantra: The Mother of All Vedas", "slug": "understanding-gayatri-mantra", "excerpt": "Learn the deep meaning behind the most sacred mantra in Hindu tradition and how to practice it.", "content": "The Gayatri Mantra is considered the most powerful and sacred mantra in Hinduism, often called the Mother of all Vedas. It appears in the Rig Veda and is dedicated to Savitri, the sun deity.\n\nOm Bhur Bhuvah Svah Tat Savitur Varenyam Bhargo Devasya Dhimahi Dhiyo Yo Nah Prachodayat.\n\nMeaning: We meditate on the glory of that Supreme Being who has created the universe, who is the embodiment of knowledge and light, who is the remover of all sins and ignorance. May He enlighten our intellect.\n\nThe mantra is best chanted during Brahma Muhurta (pre-dawn), Sandhya Kaal (twilight), and sunset.", "cover_image": "", "category": "vedic-knowledge", "tags": ["gayatri", "mantra", "vedas", "meditation"], "author_name": "Super Admin", "status": "published", "views": 0, "created_at": datetime.now(timezone.utc).isoformat(), "published_at": datetime.now(timezone.utc).isoformat()},
+            {"title": "Introduction to Bhagavad Gita: The Song of God", "slug": "introduction-to-bhagavad-gita", "excerpt": "A beginner's guide to understanding the Bhagavad Gita and its timeless teachings on duty, dharma, and devotion.", "content": "The Bhagavad Gita, literally meaning 'The Song of God', is a 700-verse Hindu scripture that is part of the Mahabharata. It is a dialogue between Prince Arjuna and Lord Krishna on the battlefield of Kurukshetra.\n\nThe Gita addresses fundamental questions about life, duty, and the nature of existence. Krishna teaches Arjuna about Karma Yoga (path of action), Bhakti Yoga (path of devotion), and Jnana Yoga (path of knowledge).\n\nKey teachings include: performing your duty without attachment to results, the immortality of the soul, and the importance of maintaining equanimity in success and failure.", "cover_image": "", "category": "sacred-texts", "tags": ["gita", "krishna", "philosophy"], "author_name": "Super Admin", "status": "published", "views": 0, "created_at": datetime.now(timezone.utc).isoformat(), "published_at": datetime.now(timezone.utc).isoformat()},
+        ]
+        await db.blog_posts.insert_many(blogs)
+        logger.info("Seeded Blog Posts")
+
+    # Seed CMS Pages
+    if await db.cms_pages.count_documents({}) == 0:
+        pages = [
+            {"title": "About Sanatan Saathi", "slug": "about", "content": "Sanatan Saathi is a comprehensive digital spiritual companion for Sanatan Dharma. Our mission is to make Vedic knowledge accessible to everyone through technology.\n\nWe provide: Vedic Mantras, Chalisa, Ashtakam, Artis, Kathas, Sacred Texts (Bhagavad Gita, Ramayana, Mahabharata), Vedas & Puranas, and AI-powered spiritual guidance through VedaChat.\n\nOur platform supports 12+ Indian languages with Sanskrit original text, transliteration, and meanings for every verse.", "meta_description": "About Sanatan Saathi - Digital Spiritual Companion for Sanatan Dharma", "show_in_menu": True, "menu_position": "header", "sort_order": 1, "is_active": True, "created_at": datetime.now(timezone.utc).isoformat()},
+            {"title": "Privacy Policy", "slug": "privacy-policy", "content": "At Sanatan Saathi, we respect your privacy and are committed to protecting your personal data. This privacy policy explains how we collect, use, and safeguard your information.\n\nWe collect: Phone number (for OTP login), usage data (for improving the app), and optional profile information. We do not sell or share your personal data with third parties.", "meta_description": "Sanatan Saathi Privacy Policy", "show_in_menu": True, "menu_position": "footer", "sort_order": 1, "is_active": True, "created_at": datetime.now(timezone.utc).isoformat()},
+            {"title": "Terms of Service", "slug": "terms-of-service", "content": "By using Sanatan Saathi, you agree to these terms of service. The content provided is for spiritual and educational purposes only.", "meta_description": "Sanatan Saathi Terms of Service", "show_in_menu": True, "menu_position": "footer", "sort_order": 2, "is_active": True, "created_at": datetime.now(timezone.utc).isoformat()},
+            {"title": "Contact Us", "slug": "contact", "content": "Have questions or suggestions? We'd love to hear from you!\n\nEmail: contact@sanatansaathi.com\n\nFor spiritual queries, try our VedaChat AI - available on the mobile app.", "meta_description": "Contact Sanatan Saathi", "show_in_menu": True, "menu_position": "footer", "sort_order": 3, "is_active": True, "created_at": datetime.now(timezone.utc).isoformat()},
+        ]
+        await db.cms_pages.insert_many(pages)
+        logger.info("Seeded CMS Pages")
+
+    # Create indexes
+    await db.admin_users.create_index("email", unique=True)
+    await db.content_items.create_index("category")
+    await db.content_items.create_index("slug")
+    await db.content_items.create_index("status")
+    await db.content_verses.create_index("item_id")
+    await db.verse_meanings.create_index([("verse_id", 1), ("language", 1)])
+    await db.daily_schedules.create_index("date")
+    await db.daily_schedules.create_index("day_of_week")
+    await db.vrat_festivals.create_index("date")
+    await db.vrat_festivals.create_index("recurring_day")
+    await db.otp_store.create_index("phone")
+    await db.upload_logs.create_index("status")
+    await db.integration_settings.create_index("key", unique=True)
+    await db.analytics_events.create_index("timestamp")
+    await db.analytics_events.create_index("user_id")
+    await db.analytics_events.create_index("content_id")
+    await db.analytics_events.create_index("event_type")
+    await db.user_streaks.create_index("user_id", unique=True)
+    await db.user_streaks.create_index("current_streak")
+    await db.audit_trail.create_index("timestamp")
+    await db.audit_trail.create_index("action")
+    await db.audit_trail.create_index("admin_id")
+    await db.security_events.create_index("timestamp")
+    await db.security_events.create_index("ip_address")
+    await db.token_blacklist.create_index("token_hash", unique=True)
+    await db.blocked_ips.create_index("ip", unique=True)
+    await db.blog_posts.create_index("slug", unique=True)
+    await db.blog_posts.create_index("status")
+    await db.cms_pages.create_index("slug", unique=True)
+    await db.public_chat_limits.create_index("identifier")
+    logger.info("Database indexes created")
+
+    # Write credentials
+    import pathlib
+    pathlib.Path("/app/memory").mkdir(exist_ok=True)
+    with open("/app/memory/test_credentials.md", "w") as f:
+        f.write(f"# SanatanSaathi Test Credentials\n\n")
+        f.write(f"## Super Admin\n- Email: {admin_email}\n- Password: {admin_password}\n- Role: super_admin\n\n")
+        f.write(f"## Auth Endpoints\n- POST /api/auth/admin/login\n- POST /api/auth/admin/register\n- GET /api/auth/me\n- POST /api/auth/logout\n- POST /api/auth/refresh\n")
+
+@app.on_event("startup")
+async def startup():
+    await seed_data()
+
+# ===================== IMPORT WIZARD (CSV/JSON/DOCX with Language Selection) =====================
+
+@api_router.post("/admin/import-wizard")
+async def import_wizard(
+    file: UploadFile = File(...),
+    category: str = Form("chalisa"),
+    language: str = Form("hi"),
+    content_type_tag: str = Form(""),
+    admin: dict = Depends(require_role(["super_admin", "content_admin"]))
+):
+    """Import Wizard: Bulk upload content from CSV/JSON/DOCX with language mapping."""
+    fname = file.filename.lower()
+    content_bytes = await file.read()
+    now = datetime.now(timezone.utc).isoformat()
+
+    log_entry = {
+        "admin_id": admin["_id"],
+        "file_name": file.filename,
+        "file_type": fname.rsplit(".", 1)[-1] if "." in fname else "unknown",
+        "category": category,
+        "target_language": language,
+        "status": "processing",
+        "parsed_items_count": 0,
+        "created_at": now,
+    }
+    log_result = await db.upload_logs.insert_one(log_entry)
+    upload_id = str(log_result.inserted_id)
+
+    try:
+        import json as json_mod
+        items = []
+
+        if fname.endswith(".json"):
+            raw = json_mod.loads(content_bytes.decode("utf-8"))
+            items = raw if isinstance(raw, list) else [raw]
+
+        elif fname.endswith(".csv"):
+            import csv, io
+            reader = csv.DictReader(io.StringIO(content_bytes.decode("utf-8")))
+            for row in reader:
+                item = {
+                    "title": row.get("title", row.get("title_hi", row.get("name", ""))),
+                    "sanskrit_text": row.get("sanskrit_text", row.get("text", row.get("verse", ""))),
+                    "transliteration": row.get("transliteration", row.get("roman", "")),
+                    "meaning": row.get("meaning", row.get(f"meaning_{language}", "")),
+                    "verse_type": row.get("verse_type", "shloka"),
+                    "verse_num": int(row.get("verse_num", row.get("num", 0))) if row.get("verse_num", row.get("num", "")).isdigit() else 0,
+                    "deity": row.get("deity", ""),
+                }
+                items.append(item)
+
+        elif fname.endswith((".docx", ".doc")):
+            import io as io_mod
+            from docx import Document
+            doc = Document(io_mod.BytesIO(content_bytes))
+            raw_text = ""
+            for para in doc.paragraphs:
+                style = para.style.name if para.style else "Normal"
+                text = para.text
+                if not text.strip():
+                    raw_text += "\n"
+                    continue
+                is_bold = any(run.bold for run in para.runs if run.bold)
+                is_italic = any(run.italic for run in para.runs if run.italic)
+                devanagari_chars = sum(1 for c in text if '\u0900' <= c <= '\u097F')
+                has_devanagari = devanagari_chars > len(text.strip()) * 0.3
+                if "Heading 1" in style:
+                    raw_text += f"\n[H1] {text}\n"
+                elif "Heading 2" in style:
+                    raw_text += f"\n[H2] {text}\n"
+                elif "Heading 3" in style:
+                    raw_text += f"\n[H3] {text}\n"
+                elif is_bold and has_devanagari:
+                    raw_text += f"[SANSKRIT] {text}\n"
+                elif is_bold:
+                    raw_text += f"[BOLD] {text}\n"
+                elif is_italic:
+                    raw_text += f"[TRANSLIT] {text}\n"
+                else:
+                    raw_text += f"{text}\n"
+
+            from emergentintegrations.llm.chat import LlmChat, UserMessage
+            chat = LlmChat(
+                api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
+                session_id=f"import-{upload_id}",
+                system_message=f"""You are a Hindu scripture content parser. Parse the uploaded text into structured JSON.
+Rules:
+- [H1] = Category name
+- [H2] = Item title
+- [H3] = Section header (verse type like Doha, Chaupai, Shloka)
+- [SANSKRIT] = Original Sanskrit/Hindi verse text. Preserve ALL line breaks, diacritical marks, special characters (anusvara, visarga, chandrabindu, halant). NEVER truncate.
+- [TRANSLIT] = Romanized transliteration
+- [BOLD] = Section label or emphasis
+- Normal text = Meaning or description
+- Target language for meanings: {language}
+- CRITICAL: Preserve 100% of the text. Do NOT truncate, abbreviate, or use "..." placeholders. For Namavali, include ALL 108 or 1008 names. Every single name must be present.
+- Preserve line breaks within verses using \\n character.
+Return ONLY valid JSON array:
+[{{"title": "item title", "deity": "deity name", "description": "brief description",
+  "verses": [{{"verse_num": 1, "verse_type": "doha|chaupai|shloka|mantra|stanza|name",
+    "sanskrit_text": "full text with \\n for line breaks",
+    "transliteration": "roman text",
+    "meaning": "meaning in {language}"}}]
+}}]""",
+            )
+            chat.with_model("anthropic", "claude-sonnet-4-5-20250929")
+            ai_resp = await chat.send_message(UserMessage(text=f"Parse for category '{category}', language '{language}':\n\n{raw_text}"))
+            json_str = ai_resp
+            if "```json" in json_str:
+                json_str = json_str.split("```json")[1].split("```")[0]
+            elif "```" in json_str:
+                json_str = json_str.split("```")[1].split("```")[0]
+            items = json_mod.loads(json_str.strip())
+            if not isinstance(items, list):
+                items = [items]
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported file format. Use .csv, .json, or .docx")
+
+        # Normalize items into consistent structure
+        normalized = []
+        for item in items:
+            if "verses" in item:
+                # Multi-verse item
+                normalized.append({
+                    "title": item.get("title", item.get("title_hi", item.get("title_en", "Untitled"))),
+                    "deity": item.get("deity", ""),
+                    "description": item.get("description", item.get("description_hi", "")),
+                    "verses": item["verses"],
+                })
+            else:
+                # Single verse entry (from CSV)
+                normalized.append({
+                    "title": item.get("title", "Untitled"),
+                    "deity": item.get("deity", ""),
+                    "description": "",
+                    "verses": [{
+                        "verse_num": item.get("verse_num", 1),
+                        "verse_type": item.get("verse_type", "shloka"),
+                        "sanskrit_text": item.get("sanskrit_text", ""),
+                        "transliteration": item.get("transliteration", ""),
+                        "meaning": item.get("meaning", ""),
+                    }],
+                })
+
+        await db.upload_logs.update_one(
+            {"_id": ObjectId(upload_id)},
+            {"$set": {
+                "status": "parsed",
+                "parsed_data": normalized,
+                "parsed_items_count": len(normalized),
+                "target_language": language,
+                "total_verses": sum(len(i.get("verses", [])) for i in normalized),
+            }}
+        )
+        return {
+            "upload_id": upload_id,
+            "status": "parsed",
+            "target_language": language,
+            "items_count": len(normalized),
+            "total_verses": sum(len(i.get("verses", [])) for i in normalized),
+            "parsed_data": normalized,
+        }
+    except Exception as e:
+        logger.error(f"Import wizard error: {e}")
+        await db.upload_logs.update_one({"_id": ObjectId(upload_id)}, {"$set": {"status": "error", "error_message": str(e)}})
+        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+
+
+@api_router.post("/admin/import-wizard/publish/{upload_id}")
+async def import_wizard_publish(upload_id: str, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    """Publish imported content to the database with proper multilingual mapping."""
+    upload = await db.upload_logs.find_one({"_id": ObjectId(upload_id)})
+    if not upload or upload["status"] != "parsed":
+        raise HTTPException(status_code=400, detail="Upload not found or not parsed")
+
+    parsed_data = upload.get("parsed_data", [])
+    category = upload.get("category", "chalisa")
+    language = upload.get("target_language", "hi")
+    now = datetime.now(timezone.utc).isoformat()
+    published = 0
+
+    for item_data in parsed_data:
+        title = item_data.get("title", "Untitled")
+        slug = title.lower().replace(" ", "-").replace("'", "").replace('"', "")[:80]
+        # Check if slug exists, append number if needed
+        existing = await db.content_items.find_one({"slug": slug})
+        if existing:
+            slug = f"{slug}-{int(datetime.now(timezone.utc).timestamp()) % 10000}"
+
+        content_doc = {
+            "category": category,
+            "slug": slug,
+            "title_hi": title if language == "hi" else "",
+            "title_en": title if language == "en" else "",
+            "title_sa": title if language == "sa" else "",
+            "deity": item_data.get("deity", ""),
+            "deity_hi": item_data.get("deity", ""),
+            "description_hi": item_data.get("description", "") if language == "hi" else "",
+            "description_en": item_data.get("description", "") if language == "en" else "",
+            "multilingual_content": {language: item_data.get("description", "")},
+            "supported_languages": [language],
+            "has_beginner_mode": True,
+            "has_expert_mode": True,
+            "total_verses": len(item_data.get("verses", [])),
+            "sort_order": published + 1,
+            "is_active": True,
+            "is_premium": False,
+            "tags": [],
+            "like_count": 0,
+            "status": "draft",
+            "created_at": now,
+            "updated_at": now,
+            "created_by": admin["_id"],
+        }
+        result = await db.content_items.insert_one(content_doc)
+        item_id = str(result.inserted_id)
+
+        for verse in item_data.get("verses", []):
+            verse_doc = {
+                "item_id": item_id,
+                "verse_num": verse.get("verse_num", 1),
+                "verse_type": verse.get("verse_type", "shloka"),
+                "sanskrit_text": verse.get("sanskrit_text", ""),
+                "transliteration": verse.get("transliteration", ""),
+                "sort_order": verse.get("verse_num", 1),
+                "is_active": True,
+            }
+            v_result = await db.content_verses.insert_one(verse_doc)
+            verse_id = str(v_result.inserted_id)
+
+            meaning = verse.get("meaning", "")
+            if meaning:
+                await db.verse_meanings.insert_one({
+                    "verse_id": verse_id,
+                    "language": language,
+                    "meaning": meaning,
+                    "word_breakdown": [],
+                    "created_at": now,
+                })
+        published += 1
+
+    await db.upload_logs.update_one(
+        {"_id": ObjectId(upload_id)},
+        {"$set": {"status": "published", "published_at": now}}
+    )
+    return {"message": f"Published {published} items with {language} language mapping", "count": published}
+
+
+# ===================== LIVE PREVIEW =====================
+
+@api_router.get("/admin/preview/item/{item_id}")
+async def live_preview_item(item_id: str, lang: str = "hi", mode: str = "beginner"):
+    """Live Preview: Shows how content appears in the mobile app before publishing."""
+    item = await db.content_items.find_one({"_id": ObjectId(item_id)})
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    verses = await db.content_verses.find({"item_id": item_id}).sort("sort_order", 1).to_list(2000)
+    preview_verses = []
+    for v in verses:
+        verse_id = str(v["_id"])
+        meaning_doc = await db.verse_meanings.find_one({"verse_id": verse_id, "language": lang})
+        all_meanings = await db.verse_meanings.find({"verse_id": verse_id}).to_list(20)
+        available_langs = [m["language"] for m in all_meanings]
+
+        verse_preview = {
+            "verse_num": v.get("verse_num"),
+            "verse_type": v.get("verse_type", "shloka"),
+            "sanskrit_text": v.get("sanskrit_text", ""),
+            "transliteration": v.get("transliteration", ""),
+            "meaning": meaning_doc["meaning"] if meaning_doc else "",
+            "word_breakdown": meaning_doc.get("word_breakdown", []) if meaning_doc else [],
+            "available_languages": available_langs,
+            "has_audio": bool(v.get("audio_base64") or v.get("verse_audio_url")),
+        }
+
+        if mode == "beginner":
+            verse_preview["show_word_breakdown"] = True
+            verse_preview["show_transliteration"] = True
+        else:
+            verse_preview["show_word_breakdown"] = False
+            verse_preview["show_transliteration"] = False
+
+        preview_verses.append(verse_preview)
+
+    return {
+        "item": serialize_doc(item),
+        "verses": preview_verses,
+        "preview_mode": mode,
+        "preview_language": lang,
+        "total_verses": len(preview_verses),
+        "supported_languages": item.get("supported_languages", ["hi"]),
+    }
+
+
+@api_router.post("/admin/preview/render")
+async def live_preview_render(request: Request):
+    """Render a live preview from raw data (before saving to DB)."""
+    body = await request.json()
+    verses = body.get("verses", [])
+    lang = body.get("language", "hi")
+    mode = body.get("mode", "beginner")
+
+    preview = []
+    for v in verses:
+        entry = {
+            "verse_num": v.get("verse_num", 0),
+            "verse_type": v.get("verse_type", "shloka"),
+            "sanskrit_text": v.get("sanskrit_text", ""),
+            "transliteration": v.get("transliteration", ""),
+            "meaning": v.get("meanings", {}).get(lang, v.get("meaning_hi", v.get("meaning", ""))),
+            "show_word_breakdown": mode == "beginner",
+            "show_transliteration": mode == "beginner",
+        }
+        preview.append(entry)
+
+    return {
+        "title": body.get("title", "Preview"),
+        "verses": preview,
+        "mode": mode,
+        "language": lang,
+    }
+
+
+# ===================== MULTILINGUAL CONTENT API (for Mobile App) =====================
+
+@api_router.get("/content/items-by-lang")
+async def get_content_by_language(
+    category: str = "",
+    lang: str = "hi",
+    skip: int = 0,
+    limit: int = 50,
+):
+    """Get content items filtered by language support. Mobile sends Accept-Language header or lang param."""
+    query = {"is_active": True, "status": "published"}
+    if category:
+        query["category"] = category
+    if lang:
+        query["supported_languages"] = lang
+
+    items = await db.content_items.find(query).sort("sort_order", 1).skip(skip).limit(limit).to_list(limit)
+    total = await db.content_items.count_documents(query)
+
+    result = []
+    for item in items:
+        doc = serialize_doc(item)
+        # Return title in requested language
+        if lang == "hi":
+            doc["display_title"] = item.get("title_hi") or item.get("title_en", "")
+        elif lang == "en":
+            doc["display_title"] = item.get("title_en") or item.get("title_hi", "")
+        else:
+            doc["display_title"] = item.get(f"title_{lang}") or item.get("title_hi") or item.get("title_en", "")
+        result.append(doc)
+
+    return {"items": result, "total": total, "language": lang}
+
+
+@api_router.get("/content/verses-by-lang/{item_id}")
+async def get_verses_by_language(item_id: str, lang: str = "hi", mode: str = "beginner"):
+    """Get verses with meanings in a specific language. Returns full content - NO truncation."""
+    item = await db.content_items.find_one({"_id": ObjectId(item_id)})
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    verses = await db.content_verses.find({"item_id": item_id}).sort("sort_order", 1).to_list(2000)
+    result = []
+    for v in verses:
+        verse_id = str(v["_id"])
+        meaning_doc = await db.verse_meanings.find_one({"verse_id": verse_id, "language": lang})
+
+        entry = {
+            "id": verse_id,
+            "verse_num": v.get("verse_num"),
+            "verse_type": v.get("verse_type"),
+            "sanskrit_text": v.get("sanskrit_text", ""),
+            "transliteration": v.get("transliteration", "") if mode == "beginner" else "",
+            "meaning": meaning_doc["meaning"] if meaning_doc else "",
+            "word_breakdown": meaning_doc.get("word_breakdown", []) if meaning_doc and mode == "beginner" else [],
+            "has_audio": bool(v.get("audio_base64") or v.get("verse_audio_url")),
+        }
+        result.append(entry)
+
+    return {
+        "item": serialize_doc(item),
+        "verses": result,
+        "language": lang,
+        "mode": mode,
+        "total": len(result),
+    }
+
+
+# ===================== MULTILINGUAL VERSE MEANING CRUD =====================
+
+@api_router.post("/content/verses/{verse_id}/meanings")
+async def add_verse_meaning(verse_id: str, request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    """Add or update meaning for a specific language."""
+    body = await request.json()
+    language = body.get("language", "hi")
+    meaning = body.get("meaning", "")
+    word_breakdown = body.get("word_breakdown", [])
+
+    existing = await db.verse_meanings.find_one({"verse_id": verse_id, "language": language})
+    if existing:
+        await db.verse_meanings.update_one(
+            {"verse_id": verse_id, "language": language},
+            {"$set": {"meaning": meaning, "word_breakdown": word_breakdown, "updated_at": datetime.now(timezone.utc).isoformat()}}
+        )
+    else:
+        await db.verse_meanings.insert_one({
+            "verse_id": verse_id,
+            "language": language,
+            "meaning": meaning,
+            "word_breakdown": word_breakdown,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+    # Update parent item's supported_languages
+    verse = await db.content_verses.find_one({"_id": ObjectId(verse_id)})
+    if verse and verse.get("item_id"):
+        await db.content_items.update_one(
+            {"_id": ObjectId(verse["item_id"])},
+            {"$addToSet": {"supported_languages": language}}
+        )
+
+    return {"message": f"Meaning for '{language}' saved", "language": language}
+
+
+@api_router.get("/content/verses/{verse_id}/all-meanings")
+async def get_all_verse_meanings(verse_id: str):
+    """Get meanings in ALL available languages for a verse."""
+    meanings = await db.verse_meanings.find({"verse_id": verse_id}).to_list(20)
+    result = {}
+    for m in meanings:
+        result[m["language"]] = {
+            "meaning": m.get("meaning", ""),
+            "word_breakdown": m.get("word_breakdown", []),
+        }
+    return {"verse_id": verse_id, "meanings": result, "available_languages": list(result.keys())}
+
+
+# ===================== GRANTH HIERARCHICAL API (Book → Volume → Chapter → Verse) =====================
+
+@api_router.get("/granth/hierarchy/{book_id}")
+async def get_granth_hierarchy(book_id: str):
+    """Get full hierarchy: Book → Chapters → Verse counts."""
+    book = await db.granth_books.find_one({"_id": ObjectId(book_id)})
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    chapters = await db.granth_chapters.find({"book_id": book_id}).sort("chapter_num", 1).to_list(500)
+    hierarchy = []
+    for ch in chapters:
+        ch_id = str(ch["_id"])
+        verse_count = await db.granth_verses.count_documents({"chapter_id": ch_id})
+        hierarchy.append({
+            "id": ch_id,
+            "chapter_num": ch.get("chapter_num"),
+            "title_hi": ch.get("title_hi", ch.get("title", {}).get("hi", "")),
+            "title_en": ch.get("title_en", ch.get("title", {}).get("en", "")),
+            "verse_count": verse_count,
+        })
+
+    return {
+        "book": serialize_doc(book),
+        "chapters": hierarchy,
+        "total_chapters": len(hierarchy),
+    }
+
+
+@api_router.get("/granth/chapter-verses/{chapter_id}")
+async def get_granth_chapter_verses(chapter_id: str, lang: str = "hi", skip: int = 0, limit: int = 100):
+    """Get verses for a chapter with multilingual meanings."""
+    chapter = await db.granth_chapters.find_one({"_id": ObjectId(chapter_id)})
+    if not chapter:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+
+    verses = await db.granth_verses.find({"chapter_id": chapter_id}).sort("verse_num", 1).skip(skip).limit(limit).to_list(limit)
+    total = await db.granth_verses.count_documents({"chapter_id": chapter_id})
+
+    result = []
+    for v in verses:
+        doc = serialize_doc(v)
+        meaning_obj = v.get("meaning", {})
+        if isinstance(meaning_obj, dict):
+            doc["display_meaning"] = meaning_obj.get(lang, meaning_obj.get("hi", meaning_obj.get("en", "")))
+        else:
+            doc["display_meaning"] = str(meaning_obj)
+        result.append(doc)
+
+    return {
+        "chapter": serialize_doc(chapter),
+        "verses": result,
+        "total": total,
+        "language": lang,
+    }
+
+
+# ===================== SUPPORTED LANGUAGES API =====================
+
+@api_router.get("/languages")
+async def get_supported_languages():
+    """Return all supported languages for the app."""
+    return [
+        {"code": "sa", "name": "Sanskrit", "native": "संस्कृतम्"},
+        {"code": "hi", "name": "Hindi", "native": "हिन्दी"},
+        {"code": "en", "name": "English", "native": "English"},
+        {"code": "mr", "name": "Marathi", "native": "मराठी"},
+        {"code": "gu", "name": "Gujarati", "native": "ગુજરાતી"},
+        {"code": "ta", "name": "Tamil", "native": "தமிழ்"},
+        {"code": "te", "name": "Telugu", "native": "తెలుగు"},
+        {"code": "bn", "name": "Bengali", "native": "বাংলা"},
+        {"code": "kn", "name": "Kannada", "native": "ಕನ್ನಡ"},
+        {"code": "ml", "name": "Malayalam", "native": "മലയാളം"},
+        {"code": "pa", "name": "Punjabi", "native": "ਪੰਜਾਬੀ"},
+        {"code": "od", "name": "Odia", "native": "ଓଡ଼ିଆ"},
+    ]
+
+
+# ===================== ROOT =====================
+
 @api_router.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"message": "Sanatan Saathi API", "version": "2.0"}
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
-
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
-
-# Include the router in the main app
 app.include_router(api_router)
+
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestLoggingMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
