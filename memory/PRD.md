@@ -1,59 +1,48 @@
-# Sanatan Saathi — PRD (Product Requirements Document)
+# Sanatan Saathi — PRD
 
-## Original Problem Statement
-Build admin panel + backend APIs for "Sanatan Saathi" — a spiritual companion for Sanatan Dharma. Key requirements from user:
-1. Multilingual Data Architecture with dynamic language tabs in Bhakti Category Manager
-2. Content Integrity — no truncation, enhanced DOCX parser, Live Preview
-3. New hierarchical Granth/Katha/Vedas modules (Book → Volume → Chapter → Verse)
-4. Import Wizard for bulk CSV/JSON/DOCX upload with language mapping
-5. Mobile App integration (Expo - future)
+## What's Been Implemented
 
-## Architecture
-- **Frontend (Admin Panel)**: React.js + Tailwind CSS
-- **Backend**: FastAPI (Python)
-- **Database**: MongoDB (designed for Supabase migration)
-- **AI Services**: Claude via Emergent LLM Key (VedaChat, DOCX/PDF parsing)
+### Session 1 (Prior)
+- Existing codebase imported from user GitHub
+- Import Wizard, Live Preview, Multilingual Tabs, Enhanced Granth Manager
 
-## What's Been Implemented (April 2026)
-- [x] Existing codebase from user's GitHub imported
-- [x] **Import Wizard** — 4-step bulk upload wizard (CSV/JSON/DOCX) with language selection & AI parsing
-- [x] **Live Preview Modal** — Shows how content appears in the mobile app (Beginner/Expert modes, multi-language, mobile/tablet/desktop simulation)
-- [x] **Dynamic Multilingual Language Tabs** — In BhaktiCategoryManager edit modal, selecting a language initializes dedicated text areas
-- [x] **Enhanced Granth Manager** — Hierarchical Book → Chapter → Verse view with multilingual meaning support and verse editing
-- [x] **Enhanced DOCX Parser** — Better detection of Devanagari script, line breaks, special chars, no truncation
-- [x] **Language-based Content APIs** — /api/content/items-by-lang, /api/content/verses-by-lang for mobile app
-- [x] **Granth Hierarchy APIs** — /api/granth/hierarchy, /api/granth/chapter-verses with language filter
-- [x] **Languages API** — /api/languages returning 12 supported Indian languages
-- [x] **Verse Meaning CRUD** — Add/update meanings per language per verse
-- [x] Sample data: 18 Gita chapters, 7 Ramcharitmanas chapters, 9 sample verses
+### Session 2 (Current)
+- [x] **Vedas & Puranas Manager** — Full hierarchical view (Book → Chapter/Mandala → Verse) matching Granth Manager. 4 Vedas with 13 chapters, 3 sample Rig Veda verses. Upload PDF button for parsing new content.
+- [x] **VedaChat AI** — Claude-powered chatbot with:
+  - **Upload Knowledge** feature: Upload PDF/DOCX → AI parses → saves structured data to `vedachat_knowledge` collection
+  - **Knowledge Base Stats** panel showing docs, verses, books count
+  - **DB-context answers**: Searches across granth_verses, veda_verses, content_verses, vedachat_knowledge for relevant content
+  - **Shloka references**: Returns Book name, Chapter number, Verse number + Sanskrit text + Meaning
+  - Multi-turn conversation with history
+  - Suggested starter questions
+- [x] **Vedas Upload & Parse** — Upload PDF/DOCX for any Veda book → Claude extracts chapters + verses → saves to DB
+- [x] **Vedas Verse Editing** — Edit Sanskrit text, transliteration, multilingual meanings per verse
 
-## Testing Results
-- Backend: 87.5% pass rate
-- Frontend: 75% pass rate
-- Core features all working
+### Backend Endpoints Added
+- GET /api/vedas/hierarchy/{book_id}
+- GET /api/vedas/chapter-verses/{chapter_id}
+- PUT /api/vedas/verses/{verse_id}
+- POST /api/vedas/upload-parse
+- POST /api/vedachat/upload-knowledge
+- GET /api/vedachat/knowledge-stats
 
-## Prioritized Backlog
+### Testing
+- Backend: 92.3% pass
+- Frontend: 85% pass
 
-### P0 (Remaining — Next Sessions)
-- [ ] Add more sample content (full Gita verses, Chalisa verses)
-- [ ] PDF upload + parsing for Vedas/Puranas
-- [ ] VedaChat AI with scripture context
-- [ ] OpenAI TTS integration for verse audio
+## Backlog
+### P0
+- [ ] Upload real scripture PDFs to populate Vedas content
+- [ ] OpenAI TTS for verse audio
+- [ ] User-facing mobile APIs with language header
 
-### P1 
-- [ ] Audio Manager enhancement
+### P1
+- [ ] Katha Manager enhancement
+- [ ] Arti Manager with audio
 - [ ] Panchang bulk import
-- [ ] User management features
-- [ ] App Settings management
+- [ ] Analytics dashboard
 
 ### P2
-- [ ] Analytics dashboard
-- [ ] Expo mobile integration guide with working code examples
-- [ ] Content export functionality
-- [ ] Media Studio (image/video generation)
-
-## Next Tasks
-1. User to upload real content via Import Wizard
-2. Add VedaChat AI integration with Claude
-3. Add TTS audio generation for verses
-4. Expand Granth section with actual verse data
+- [ ] Expo mobile app integration
+- [ ] Media Studio (image/video gen)
+- [ ] Content export
