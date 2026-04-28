@@ -1,0 +1,69 @@
+{
+  "summary": "Iteration 6: Tested new mobile backend endpoints (panchang/today, mantra-of-day), APScheduler boot, regression on 7 astrology endpoints, web UI regression (VedaChat/Dashboard/Graha-Kundli), and mobile app static checks (api/client.js, useApiData hook, 4 v2 screens wiring + ESLint). 11/12 backend tests pass; one FAIL revealed a real bug — sunrise/sunset always falls back to hardcoded 06:00/18:30 because swe.rise_trans is invoked with the wrong signature.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "/api/mobile/panchang/today",
+        "issue": "Sunrise/sunset always returns hardcoded fallback '06:00'/'18:30' regardless of lat/lon/tz. Backend log shows: `Sunrise/sunset calc fallback: function takes at most 7 arguments (8 given)`. In /app/backend/mobile_extras.py line 100/102 the call `swe.rise_trans(jd-1, swe.SUN, lon, lat, 0, 0, 0, rsmi_flag)` is wrong — pyswisseph signature is `rise_trans(tjd_start, body, geopos, rsmi, atpress=0, attemp=0, horhgt=0)` where geopos is a tuple (lon, lat, alt). As a downstream effect, Rahu Kaal is computed against fixed sunrise/sunset so it does not vary by location either (only by weekday). Mumbai vs Delhi sunrise is identical in the API response, confirming the bug.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "/api/mobile/panchang/today",
+        "issue": "When swe.rise_trans returns an error tuple (non-zero), code silently logs warning and falls back — there is no `accuracy` or `is_estimated` flag in the response so consumers cannot detect they received fallback values."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_mobile_endpoints.py",
+    "/app/test_reports/pytest/iter6_results.xml"
+  ],
+  "action_items": [
+    "Fix swe.rise_trans call in /app/backend/mobile_extras.py compute_today_panchang(): use `swe.rise_trans(jd - 1, swe.SUN, (lon, lat, 0), swe.CALC_RISE)` and `swe.rise_trans(jd - 1, swe.SUN, (lon, lat, 0), swe.CALC_SET)` (geopos as tuple, rsmi-flag is the 4th arg, no atpress/attemp/horhgt needed). Verify by re-running pytest backend/tests/test_mobile_endpoints.py::TestMobilePanchang::test_panchang_mumbai_differs_from_delhi — Mumbai sunrise should be ~5:55-6:10 area, Delhi ~5:30-6:00 (April 2026), and the two should differ by ~5-25 minutes.",
+    "Optionally surface fallback flag in panchang response (`sunrise_estimated: true`) when computation fails."
+  ],
+  "critical_code_review_comments": [
+    "mobile_extras.py compute_today_panchang: swe.rise_trans positional arg order is wrong → masks errors and silently degrades the most useful field of the API.",
+    "server.py is now 5131 lines — exceeds the 700-line guideline by ~7×; routes should be split into routers/ modules (kundli, dasha, dosha, charts, insights, mobile) for maintainability.",
+    "mobile_extras.start_notification_scheduler holds the scheduler in a module-level `_scheduler` global — fine for a single process, but on horizontal scale it would fire daily reminders N times. Worth a TODO.",
+    "expo-app/src/api/client.js DEFAULT_PASSWORD is hard-coded admin password (line 12). For a shipped mobile app this is a serious leak — should be removed and replaced with a real signup flow before public release. Acceptable for current MVP/prototype phase.",
+    "useApiData.js uses `eslint-disable-next-line react-hooks/exhaustive-deps` twice — fine, but the `deps` arg is essentially advisory; document the contract or accept a stable callback instead.",
+    "Mantra-of-day endpoint returns the same response for every user (purely weekday-derived). That's fine but the path is unauthenticated and could be cached at CDN; consider Cache-Control: public, max-age=3600."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_mobile_endpoints.py (new)",
+    "/app/test_reports/pytest/iter6_results.xml (new)"
+  ],
+  "success_rate": {"backend": "92% (11/12 pytest)", "frontend": "100% (web regression all pass; mobile screens cannot run in container — static checks only)"},
+  "test_credentials": "admin@sanatansaathi.com / SanatanAdmin@2026 (login URL is /login, /auth/admin/login for API). Login + access_token retrieval verified working.",
+  "seed_data_creation": "none (TEST_RegressionUser kundli/generate succeeded but the endpoint already returned stored kundli for admin)",
+  "verified_checks": {
+    "GET /api/mobile/panchang/today (default Delhi)": "200 — date='28 April 2026', tithi_hi='शुक्ल पक्ष द्वादशी', nakshatra_hi='चित्रा', yoga_hi='व्यतीपात', karana_hi='बालव', rahu_kaal='13:48 – 15:22'. All 9 keys present, paksha included, sunrise/sunset HH:MM format, rahu_kaal correct format.",
+    "GET /api/mobile/panchang/today?lat=19.0760&lon=72.8777&tz=Asia/Kolkata (Mumbai)": "200 — but sunrise/sunset IDENTICAL to Delhi default ('06:00'/'18:30'). FAIL — see bug above.",
+    "GET /api/mobile/mantra-of-day": "200 — graha='Mars', graha_hi present, devta_hi present, mantra non-empty, count=108, day_hi present, date=2026-04-28. Tuesday→Mars correctly returned.",
+    "Backend supervisor log on startup": "Confirmed: 'mobile_extras - INFO - Notification scheduler started (06:00 IST daily)' and 'apscheduler.scheduler - INFO - Added job ... daily_reminders ... Scheduler started' both appear.",
+    "Astrology regression endpoints (auth)": "All 7 (kundli/my, dasha/current, dosha/detect, charts/d1-d9, insights/today, notifications/today, recommendations/mantra) return non-401, status in {200,400,404}. /api/kundli/generate returns 200/400/422 with valid payload.",
+    "Web /admin/vedachat regression": "voice-input-btn ✓, voice-lang-select ✓, auto-speak-toggle ✓ all present.",
+    "Web /admin/dashboard regression": "DailyUpaya (आज का उपाय) + DashaInfluence (दशा प्रभाव) cards both rendered.",
+    "Web /admin/graha-kundli regression": "D1, D9, Dosha (दोष), Dasha (दशा) all present and rendered with computed values for Super Admin user.",
+    "Mobile app file existence": "VS_CODE_EXPO_GO_SETUP.md = 7.4KB ✓ (>3KB), GOOGLE_CLOUD_TTS_SETUP.md = 5.3KB ✓ (>3KB), /app/backend/mobile_extras.py = 11.3KB ✓.",
+    "expo-app/src/api/client.js exports": "Verified all 11 methods present: getPanchangToday, getMantraOfDay, getInsightsToday, getNotificationsToday, getMyKundli, getCharts, getCurrentDasha, detectDoshas, generateKundli, ttsSynthesize, vedaChat, ensureLogin, loginDefault, logout, getStoredUser. Uses axios + AsyncStorage + request interceptor (Bearer token) + response interceptor (auto-retry on 401 via loginDefault).",
+    "HomeScreen.js": "Imports api + useApiData ✓; uses api.getMantraOfDay (line 137), api.getPanchangToday (line 138), api.getInsightsToday (line 139). Fallback: TODAY_UPAYA / TODAY_PANCHANG.",
+    "KundliScreen.js": "Imports api + useApiData ✓; OverviewTab + AnalysisTab use api.getMyKundli (lines 25, 133), Dasha card uses api.getCurrentDasha (line 107).",
+    "PanchangScreen.js": "TodayTab uses api.getPanchangToday with TODAY_PANCHANG fallback (line 12-13).",
+    "AIChatScreen.js": "Uses api.vedaChat(text, conversationId) (line 27). pickReply is no longer referenced.",
+    "ESLint /app/expo-app/src/api/client.js": "0 issues",
+    "ESLint /app/expo-app/src/hooks/useApiData.js": "0 issues",
+    "ESLint /app/expo-app/src/screens/v2 (all files)": "0 issues"
+  },
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Mobile app cannot be runtime-tested — static + API checks only. Existing pytest suite at /app/backend/tests/test_mobile_endpoints.py covers panchang + mantra-of-day + 8 regression endpoints — re-run after the rise_trans fix to confirm Mumbai vs Delhi sunrise differ. Login URL is /login (web) or /auth/admin/login (API). Scheduler is registered on startup; verify via /var/log/supervisor/backend.err.log grep 'Notification scheduler started'. swisseph python lib version: signature is rise_trans(tjd_start, body, geopos_tuple, rsmi, atpress, attemp, horhgt) — geopos must be a tuple/list, not separate args.",
+  "rca of the issue": "Bug: /api/mobile/panchang/today sunrise/sunset always returns fallback '06:00'/'18:30'.\nReproduction: `curl '<BASE>/api/mobile/panchang/today'` and `curl '<BASE>/api/mobile/panchang/today?lat=19.0760&lon=72.8777'` — both return identical sunrise/sunset.\nRoot cause: /app/backend/mobile_extras.py:100-102 — `swe.rise_trans(jd - 1, swe.SUN, lon, lat, 0, 0, 0, rsmi_flag)` passes 8 positional args. pyswisseph's rise_trans accepts at most 7 args with signature `rise_trans(tjd_start, body, geopos, rsmi, atpress=0, attemp=0, horhgt=0)` where geopos is a (lon, lat, alt) tuple. The TypeError is silently caught by the try/except (line 119) and the fallback values are returned. Backend log confirms: 'Sunrise/sunset calc fallback: function takes at most 7 arguments (8 given)'.\nMitigation: Replace lines 100-102 with:\n  rs = swe.rise_trans(jd - 1, swe.SUN, (lon, lat, 0), swe.CALC_RISE)\n  ss = swe.rise_trans(jd - 1, swe.SUN, (lon, lat, 0), swe.CALC_SET)\nThen retest. Optionally raise the fallback warning to the response payload as `is_estimated: true` so clients can show a tooltip."
+}

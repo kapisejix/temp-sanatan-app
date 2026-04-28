@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, TextInput, StyleSheet, KeyboardAvoidingView, Platform } from 'react-native';
 import { COLORS } from '../../config/api';
+import api from '../../api/client';
 
 const SUGGESTED = [
   'आज का शुभ समय क्या है?',
@@ -9,38 +10,44 @@ const SUGGESTED = [
   'साढ़े साती क्या है?',
 ];
 
-const MOCK_REPLIES = {
-  default: 'मैं आपकी सहायता के लिए यहाँ हूँ। ज्योतिष, मंत्र, या शास्त्रों के बारे में कुछ भी पूछें।',
-  hanuman: 'हनुमान चालीसा 40 चौपाइयों में रचित श्री हनुमान जी की स्तुति है — मंगलवार को नियमित पाठ करने से बाधाओं से मुक्ति मिलती है।',
-  mantra: 'आपकी कुंडली के अनुसार शनि का प्रभाव सक्रिय है। शनिवार को "ॐ शं शनैश्चराय नमः" का 108 बार जप लाभकारी होगा।',
-  sade: 'साढ़े साती शनि के द्वारा जन्म चन्द्र राशि से 12वें, 1वें, 2रे भाव से गुजरने का साढ़े सात वर्ष लंबा काल है। हनुमान चालीसा का पाठ अनुकूल है।',
-};
-
-function pickReply(q) {
-  const t = q.toLowerCase();
-  if (t.includes('हनुमान')) return MOCK_REPLIES.hanuman;
-  if (t.includes('मंत्र') || t.includes('शुभ')) return MOCK_REPLIES.mantra;
-  if (t.includes('साढ़े') || t.includes('शनि')) return MOCK_REPLIES.sade;
-  return MOCK_REPLIES.default;
-}
-
 export default function AIChatScreen({ navigation }) {
   const [messages, setMessages] = useState([{ role: 'assistant', text: 'नमस्ते 🙏 मैं वेदचैट AI हूँ। पूछिए — मैं उत्तर देने का प्रयास करूँगा।' }]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [conversationId, setConversationId] = useState(null);
   const scrollRef = useRef(null);
 
-  const send = (text) => {
+  const send = async (text) => {
     const t = (text || input).trim();
     if (!t) return;
     setInput('');
     setMessages(prev => [...prev, { role: 'user', text: t }]);
     setLoading(true);
-    setTimeout(() => {
-      setMessages(prev => [...prev, { role: 'assistant', text: pickReply(t) }]);
+    try {
+      const res = await api.vedaChat(t, conversationId);
+      if (res.conversation_id) setConversationId(res.conversation_id);
+      const reply = res.response?.content || 'क्षमा करें — उत्तर नहीं मिला।';
+      setMessages(prev => [...prev, { role: 'assistant', text: reply }]);
+    } catch (e) {
+      // Fallback offline reply
+      const fallback = (
+        t.includes('हनुमान') ? 'हनुमान चालीसा मंगलवार को 1 बार पाठ करना अत्यंत शुभ माना जाता है।'
+        : t.includes('शनि') || t.includes('साढ़े') ? 'साढ़े साती शनि के द्वारा जन्म चन्द्र राशि से 12वें, 1वें, 2रे भाव से गुजरने का साढ़े सात वर्ष का काल है।'
+        : 'मैं आपकी सहायता के लिए यहाँ हूँ। (ऑफ़लाइन — सर्वर से कनेक्ट नहीं)'
+      );
+      setMessages(prev => [...prev, { role: 'assistant', text: fallback }]);
+    } finally {
       setLoading(false);
       setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
-    }, 600);
+    }
+  };
+
+  const playReply = async (text) => {
+    try {
+      const tts = await api.ttsSynthesize(text, 'hi');
+      // For brevity in mobile, native audio playback omitted here — Web handles it.
+      // (Expo AV could decode base64 mp3 too via FileSystem.writeAsStringAsync)
+    } catch (e) { /* TTS optional */ }
   };
 
   return (

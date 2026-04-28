@@ -5062,6 +5062,43 @@ async def api_insights_today(admin: dict = Depends(get_current_admin)):
     }
 
 
+# ===================== MOBILE-FRIENDLY ENDPOINTS =====================
+
+from mobile_extras import compute_today_panchang, start_notification_scheduler
+
+@api_router.get("/mobile/panchang/today")
+async def mobile_panchang_today(lat: float = 28.6139, lon: float = 77.2090, tz: str = "Asia/Kolkata"):
+    """Public daily Panchang (no auth) — Tithi/Nakshatra/Yoga/Karana via Swiss Ephemeris."""
+    try:
+        return compute_today_panchang(lat=lat, lon=lon, tz_name=tz)
+    except Exception as e:
+        logger.error(f"Panchang error: {e}")
+        raise HTTPException(status_code=500, detail=f"Panchang failed: {e}")
+
+
+@api_router.get("/mobile/mantra-of-day")
+async def mobile_mantra_of_day():
+    """Public day-based mantra (no auth) — Tuesday→Mars/Hanuman etc."""
+    today_dt = datetime.now(timezone.utc)
+    weekday = today_dt.weekday()
+    day_to_graha = {0:"Moon",1:"Mars",2:"Mercury",3:"Jupiter",4:"Venus",5:"Saturn",6:"Sun"}
+    day_graha = day_to_graha[weekday]
+    info = GRAHA_MANTRA_MAP.get(day_graha, {})
+    return {
+        "graha": day_graha,
+        "graha_hi": GRAHA_NAMES_HI.get(day_graha, day_graha),
+        "devta_hi": info.get("devta_hi", ""),
+        "mantra": info.get("mantra", ""),
+        "mantra_en": info.get("mantra_en", ""),
+        "count": info.get("count", 108),
+        "day_hi": info.get("day_hi", ""),
+        "color_hi": info.get("color_hi", ""),
+        "remedy_hi": info.get("remedy_hi", ""),
+        "remedy_en": info.get("remedy_en", ""),
+        "date": today_dt.strftime("%Y-%m-%d"),
+    }
+
+
 # ===================== ROOT =====================
 
 @api_router.get("/")
@@ -5080,6 +5117,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.on_event("startup")
+async def _start_scheduler():
+    try:
+        start_notification_scheduler(app, db)
+    except Exception as e:
+        logger.warning(f"Scheduler startup skipped: {e}")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():

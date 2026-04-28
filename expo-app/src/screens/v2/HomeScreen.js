@@ -1,10 +1,12 @@
-import React, { useState, useRef } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Image } from 'react-native';
+import React, { useState, useRef, useEffect } from 'react';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
 import { Audio } from 'expo-av';
 import { COLORS } from '../../config/api';
 import {
-  TODAY_UPAYA, CURRENT_DASHA, TODAY_PANCHANG, TRENDING_BHAKTI, QUICK_ACTIONS, SAMPLE_AUDIO_URI,
+  TODAY_UPAYA, CURRENT_DASHA, TODAY_PANCHANG, TRENDING_BHAKTI, QUICK_ACTIONS,
 } from '../../data/mockData';
+import api from '../../api/client';
+import useApiData from '../../hooks/useApiData';
 
 function Section({ title, children, accent }) {
   return (
@@ -20,18 +22,19 @@ function Section({ title, children, accent }) {
   );
 }
 
-function UpayaCard({ onPlay, playing, loading, onWhy }) {
+function UpayaCard({ data, onPlay, playing, loading, onWhy }) {
+  const u = data || TODAY_UPAYA;
   return (
     <View style={styles.upayaCard}>
       <Text style={styles.upayaLabel}>आज का उपाय</Text>
-      <Text style={styles.upayaGraha}>{TODAY_UPAYA.graha_hi}</Text>
-      <Text style={styles.upayaDevta}>{TODAY_UPAYA.devta_hi}</Text>
+      <Text style={styles.upayaGraha}>{u.graha_hi}</Text>
+      <Text style={styles.upayaDevta}>{u.devta_hi}</Text>
       <View style={styles.mantraBox}>
-        <Text style={styles.mantraText}>{TODAY_UPAYA.mantra}</Text>
+        <Text style={styles.mantraText}>{u.mantra}</Text>
       </View>
       <View style={styles.upayaMetaRow}>
-        <Text style={styles.upayaMeta}>जप संख्या: <Text style={styles.upayaMetaBold}>{TODAY_UPAYA.count}</Text></Text>
-        <Text style={styles.upayaMeta}>दिन: <Text style={styles.upayaMetaBold}>{TODAY_UPAYA.day_hi}</Text></Text>
+        <Text style={styles.upayaMeta}>जप संख्या: <Text style={styles.upayaMetaBold}>{u.count}</Text></Text>
+        <Text style={styles.upayaMeta}>दिन: <Text style={styles.upayaMetaBold}>{u.day_hi}</Text></Text>
       </View>
       <View style={styles.upayaButtonsRow}>
         <TouchableOpacity style={styles.primaryBtn} onPress={onPlay} disabled={loading}>
@@ -45,28 +48,31 @@ function UpayaCard({ onPlay, playing, loading, onWhy }) {
   );
 }
 
-function DashaCard() {
+function DashaCard({ insights, dasha }) {
+  const cd = dasha || CURRENT_DASHA;
+  const themes = insights?.themes_hi || CURRENT_DASHA.insights_hi;
+  const severity = insights?.overall_severity_hi || CURRENT_DASHA.overall_severity_hi;
   return (
     <View style={styles.card}>
       <View style={styles.cardHeaderRow}>
         <Text style={styles.cardTitle}>वर्तमान दशा प्रभाव</Text>
         <View style={styles.severityBadge}>
-          <Text style={styles.severityText}>{CURRENT_DASHA.overall_severity_hi}</Text>
+          <Text style={styles.severityText}>{severity}</Text>
         </View>
       </View>
       <View style={styles.dashaPillsRow}>
         <View style={styles.dashaPill}>
           <Text style={styles.dashaPillLabel}>महादशा</Text>
-          <Text style={styles.dashaPillPlanet}>{CURRENT_DASHA.mahadasha.planet_hi}</Text>
-          <Text style={styles.dashaPillDates}>{CURRENT_DASHA.mahadasha.start} → {CURRENT_DASHA.mahadasha.end}</Text>
+          <Text style={styles.dashaPillPlanet}>{cd.mahadasha?.planet_hi || '—'}</Text>
+          <Text style={styles.dashaPillDates}>{(cd.mahadasha?.start || '').slice(0,10)} → {(cd.mahadasha?.end || '').slice(0,10)}</Text>
         </View>
         <View style={styles.dashaPill}>
           <Text style={styles.dashaPillLabel}>अंतर्दशा</Text>
-          <Text style={styles.dashaPillPlanet}>{CURRENT_DASHA.antardasha.planet_hi}</Text>
-          <Text style={styles.dashaPillDates}>{CURRENT_DASHA.antardasha.start} → {CURRENT_DASHA.antardasha.end}</Text>
+          <Text style={styles.dashaPillPlanet}>{cd.antardasha?.planet_hi || '—'}</Text>
+          <Text style={styles.dashaPillDates}>{(cd.antardasha?.start || '').slice(0,10)} → {(cd.antardasha?.end || '').slice(0,10)}</Text>
         </View>
       </View>
-      {CURRENT_DASHA.insights_hi.map((ins, i) => (
+      {themes.slice(0, 3).map((ins, i) => (
         <View key={i} style={styles.insightRow}>
           <View style={styles.insightDot} />
           <Text style={styles.insightText}>{ins}</Text>
@@ -76,16 +82,17 @@ function DashaCard() {
   );
 }
 
-function PanchangCard() {
+function PanchangCard({ data }) {
+  const t = data || TODAY_PANCHANG;
   return (
     <View style={styles.card}>
       <Text style={styles.cardTitle}>आज का पंचांग</Text>
-      <Text style={styles.panchangDate}>{TODAY_PANCHANG.date} · {TODAY_PANCHANG.weekday_hi}</Text>
+      <Text style={styles.panchangDate}>{t.date} · {t.weekday_hi}</Text>
       <View style={styles.panchangGrid}>
-        <View style={styles.panchangCell}><Text style={styles.panchangLabel}>तिथि</Text><Text style={styles.panchangValue}>{TODAY_PANCHANG.tithi_hi}</Text></View>
-        <View style={styles.panchangCell}><Text style={styles.panchangLabel}>नक्षत्र</Text><Text style={styles.panchangValue}>{TODAY_PANCHANG.nakshatra_hi}</Text></View>
-        <View style={styles.panchangCell}><Text style={styles.panchangLabel}>योग</Text><Text style={styles.panchangValue}>{TODAY_PANCHANG.yoga_hi}</Text></View>
-        <View style={styles.panchangCell}><Text style={styles.panchangLabel}>राहु काल</Text><Text style={styles.panchangValue}>{TODAY_PANCHANG.rahu_kaal}</Text></View>
+        <View style={styles.panchangCell}><Text style={styles.panchangLabel}>तिथि</Text><Text style={styles.panchangValue}>{t.tithi_hi}</Text></View>
+        <View style={styles.panchangCell}><Text style={styles.panchangLabel}>नक्षत्र</Text><Text style={styles.panchangValue}>{t.nakshatra_hi}</Text></View>
+        <View style={styles.panchangCell}><Text style={styles.panchangLabel}>योग</Text><Text style={styles.panchangValue}>{t.yoga_hi}</Text></View>
+        <View style={styles.panchangCell}><Text style={styles.panchangLabel}>राहु काल</Text><Text style={styles.panchangValue}>{t.rahu_kaal}</Text></View>
       </View>
     </View>
   );
@@ -126,6 +133,32 @@ export default function HomeScreen({ navigation }) {
   const [whyModal, setWhyModal] = useState(false);
   const soundRef = useRef(null);
 
+  // Live data — public mantra-of-day, public panchang, authenticated insights
+  const mantraDay = useApiData(api.getMantraOfDay, TODAY_UPAYA, []);
+  const panchang = useApiData(api.getPanchangToday, TODAY_PANCHANG, []);
+  const insights = useApiData(api.getInsightsToday, null, []);
+
+  // Build upaya: prefer kundli's top recommendation, else day-based mantra
+  const upaya = (() => {
+    const ins = insights.data;
+    if (ins?.top_recommendation) {
+      const r = ins.top_recommendation.recommendation;
+      return {
+        graha_hi: ins.top_recommendation.graha_hi,
+        devta_hi: r.devta_hi,
+        mantra: r.mantra,
+        mantra_en: r.mantra_en,
+        count: r.count,
+        day_hi: r.day_hi,
+        why_hi: (ins.top_recommendation.reasons || []).join(' · ') || TODAY_UPAYA.why_hi,
+      };
+    }
+    return mantraDay.data;
+  })();
+  const upayaWhy = upaya?.why_hi || `यह उपाय ${upaya?.devta_hi || ''} के लिए है। ${upaya?.day_hi ? upaya.day_hi + ' को विशेष लाभकारी।' : ''}`;
+  const dasha = insights.data?.current_dasha;
+  const dashaInterp = insights.data?.dasha_interpretation;
+
   const togglePlay = async () => {
     try {
       if (soundRef.current && playing) {
@@ -138,12 +171,19 @@ export default function HomeScreen({ navigation }) {
         setPlaying(true);
         return;
       }
+      if (!upaya?.mantra) return;
       setLoading(true);
-      const { sound } = await Audio.Sound.createAsync({ uri: SAMPLE_AUDIO_URI });
-      soundRef.current = sound;
-      sound.setOnPlaybackStatusUpdate(s => { if (s.didJustFinish) setPlaying(false); });
-      await sound.playAsync();
-      setPlaying(true);
+      // Try real TTS via /api/tts/synthesize
+      try {
+        const tts = await api.ttsSynthesize(upaya.mantra, 'hi');
+        const { sound } = await Audio.Sound.createAsync({ uri: `data:audio/mpeg;base64,${tts.audio_base64}` });
+        soundRef.current = sound;
+        sound.setOnPlaybackStatusUpdate(s => { if (s.didJustFinish) setPlaying(false); });
+        await sound.playAsync();
+        setPlaying(true);
+      } catch (e) {
+        // TTS not configured — show silent fail (button just resets)
+      }
     } catch (e) { /* ignore */ }
     finally { setLoading(false); }
   };
@@ -155,15 +195,15 @@ export default function HomeScreen({ navigation }) {
         <Text style={styles.greetSub}>आज का आध्यात्मिक मार्गदर्शन</Text>
       </View>
 
-      <UpayaCard onPlay={togglePlay} playing={playing} loading={loading} onWhy={() => setWhyModal(!whyModal)} />
+      <UpayaCard data={upaya} onPlay={togglePlay} playing={playing} loading={loading} onWhy={() => setWhyModal(!whyModal)} />
       {whyModal && (
         <View style={styles.whyBox}>
-          <Text style={styles.whyText}>{TODAY_UPAYA.why_hi}</Text>
+          <Text style={styles.whyText}>{upayaWhy}</Text>
         </View>
       )}
 
-      <DashaCard />
-      <PanchangCard />
+      <DashaCard insights={dashaInterp} dasha={dasha} />
+      <PanchangCard data={panchang.data} />
 
       <Section title="त्वरित कार्य">
         <QuickActions navigation={navigation} />

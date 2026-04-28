@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
 import { COLORS } from '../../config/api';
 import { KUNDLI_OVERVIEW, KUNDLI_ANALYSIS, TODAY_UPAYA } from '../../data/mockData';
+import api from '../../api/client';
+import useApiData from '../../hooks/useApiData';
 
 const TABS = ['Overview', 'Charts', 'Analysis', 'Remedies'];
 const TAB_LABELS = { Overview: 'सारांश', Charts: 'चार्ट', Analysis: 'विश्लेषण', Remedies: 'उपाय' };
@@ -20,7 +22,19 @@ function ScoreBar({ s }) {
 }
 
 function OverviewTab() {
-  const k = KUNDLI_OVERVIEW;
+  const my = useApiData(api.getMyKundli, null, []);
+  const overview = my.data ? {
+    user: { name: my.data.name || KUNDLI_OVERVIEW.user.name, dob: my.data.dob, tob: my.data.tob, place: my.data.birth_place },
+    ascendant_hi: my.data.ascendant?.rashi_hi || KUNDLI_OVERVIEW.ascendant_hi,
+    graha_scores: my.data.graha_scores || KUNDLI_OVERVIEW.graha_scores,
+    doshas: my.data.doshas ? [
+      { type: 'mangal_dosha', name_hi: 'मंगल दोष', present: my.data.doshas.mangal_dosha?.present, severity_hi: my.data.doshas.mangal_dosha?.severity_hi || 'नहीं' },
+      { type: 'kaal_sarp_dosha', name_hi: 'काल सर्प दोष', present: my.data.doshas.kaal_sarp_dosha?.present, severity_hi: my.data.doshas.kaal_sarp_dosha?.severity_hi || 'नहीं' },
+      { type: 'sade_sati', name_hi: 'साढ़े साती', present: my.data.doshas.sade_sati?.present, severity_hi: my.data.doshas.sade_sati?.severity_hi || 'नहीं' },
+    ] : KUNDLI_OVERVIEW.doshas,
+  } : KUNDLI_OVERVIEW;
+
+  const k = overview;
   return (
     <View>
       <View style={styles.userCard}>
@@ -50,6 +64,9 @@ function OverviewTab() {
           </View>
         ))}
       </View>
+      {my.usingFallback && (
+        <Text style={styles.fallbackHint}>* ऑफ़लाइन/मॉक डेटा दिखाया जा रहा है</Text>
+      )}
     </View>
   );
 }
@@ -87,18 +104,22 @@ function ChartsTab() {
 }
 
 function AnalysisTab() {
+  const dasha = useApiData(api.getCurrentDasha, null, []);
+  const md = dasha.data?.current_dasha?.mahadasha;
+  const ad = dasha.data?.current_dasha?.antardasha;
+  const themes = dasha.data?.interpretation?.themes_hi;
   return (
     <View>
       <Text style={styles.tabSection}>दशा विश्लेषण</Text>
       <View style={styles.card}>
         <Text style={styles.bodyText}>
-          वर्तमान महादशा: <Text style={{ fontWeight: '700' }}>शनि (2016-2035)</Text>{'\n'}
-          वर्तमान अंतर्दशा: <Text style={{ fontWeight: '700' }}>शुक्र (2023-2026)</Text>
+          वर्तमान महादशा: <Text style={{ fontWeight: '700' }}>{md?.planet_hi || 'शनि'} ({(md?.start || '2016').slice(0,4)}-{(md?.end || '2035').slice(0,4)})</Text>{'\n'}
+          वर्तमान अंतर्दशा: <Text style={{ fontWeight: '700' }}>{ad?.planet_hi || 'शुक्र'} ({(ad?.start || '2023').slice(0,4)}-{(ad?.end || '2026').slice(0,4)})</Text>
         </Text>
       </View>
 
       <Text style={styles.tabSection}>3 मुख्य भविष्यवाणियाँ</Text>
-      {KUNDLI_ANALYSIS.predictions_hi.map((p, i) => (
+      {(themes && themes.length ? themes : KUNDLI_ANALYSIS.predictions_hi).slice(0, 3).map((p, i) => (
         <View key={i} style={[styles.card, { paddingVertical: 12 }]}>
           <Text style={styles.predictionNum}>{i + 1}</Text>
           <Text style={styles.predictionText}>{p}</Text>
@@ -109,17 +130,28 @@ function AnalysisTab() {
 }
 
 function RemediesTab() {
+  const my = useApiData(api.getMyKundli, null, []);
+  const top = my.data?.top_recommendations?.[0];
+  const u = top ? {
+    graha_hi: top.graha_hi,
+    devta_hi: top.recommendation?.devta_hi,
+    mantra: top.recommendation?.mantra,
+    count: top.recommendation?.count || 108,
+    day_hi: top.recommendation?.day_hi,
+    remedy_hi: top.recommendation?.remedy_hi,
+  } : TODAY_UPAYA;
+
   return (
     <View>
       <Text style={styles.tabSection}>आज का मंत्र</Text>
       <View style={[styles.card, { backgroundColor: '#FEF0EC', borderColor: '#FDDDD4' }]}>
-        <Text style={styles.remedyGraha}>{TODAY_UPAYA.graha_hi}</Text>
-        <Text style={styles.remedyDevta}>{TODAY_UPAYA.devta_hi}</Text>
+        <Text style={styles.remedyGraha}>{u.graha_hi}</Text>
+        <Text style={styles.remedyDevta}>{u.devta_hi}</Text>
         <View style={styles.remedyMantraBox}>
-          <Text style={styles.remedyMantra}>{TODAY_UPAYA.mantra}</Text>
+          <Text style={styles.remedyMantra}>{u.mantra}</Text>
         </View>
-        <Text style={styles.remedyMeta}>जप: {TODAY_UPAYA.count}× · दिन: {TODAY_UPAYA.day_hi}</Text>
-        <Text style={styles.remedyText}>{TODAY_UPAYA.remedy_hi}</Text>
+        <Text style={styles.remedyMeta}>जप: {u.count}× · दिन: {u.day_hi}</Text>
+        <Text style={styles.remedyText}>{u.remedy_hi}</Text>
         <TouchableOpacity style={styles.playBtn}>
           <Text style={styles.playBtnText}>▶ मंत्र सुनें</Text>
         </TouchableOpacity>

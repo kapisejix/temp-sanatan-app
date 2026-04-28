@@ -2,12 +2,15 @@ import React, { useState } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
 import { COLORS } from '../../config/api';
 import { TODAY_PANCHANG, MONTHLY_PANCHANG, FESTIVALS, MUHURATS } from '../../data/mockData';
+import api from '../../api/client';
+import useApiData from '../../hooks/useApiData';
 
 const TABS = ['Today', 'Monthly', 'Festivals', 'Muhurat'];
 const TAB_LABELS = { Today: 'आज', Monthly: 'मासिक', Festivals: 'त्योहार', Muhurat: 'मुहूर्त' };
 
 function TodayTab() {
-  const t = TODAY_PANCHANG;
+  const { data } = useApiData(api.getPanchangToday, TODAY_PANCHANG, []);
+  const t = data || TODAY_PANCHANG;
   return (
     <View>
       <View style={styles.bigCard}>
