@@ -4483,6 +4483,191 @@ async def get_supported_languages():
     ]
 
 
+# ===================== KUNDLI & GRAHA MANTRA SYSTEM =====================
+
+from kundli_engine import generate_kundli, calculate_graha_scores, get_top_recommendations, GRAHA_MANTRA_MAP, GRAHA_NAMES_HI
+
+@api_router.post("/kundli/generate")
+async def create_kundli(request: Request, admin: dict = Depends(get_current_admin)):
+    """Generate Kundli using Swiss Ephemeris — accurate planetary positions."""
+    body = await request.json()
+    name = body.get("name", "")
+    gender = body.get("gender", "")
+    dob = body.get("dob", "")  # YYYY-MM-DD
+    tob = body.get("tob", "")  # HH:MM
+    place = body.get("birth_place", body.get("place", ""))
+
+    if not all([name, dob, tob, place]):
+        raise HTTPException(status_code=400, detail="name, dob (YYYY-MM-DD), tob (HH:MM), birth_place are required")
+
+    try:
+        kundli = generate_kundli(name, gender, dob, tob, place)
+    except Exception as e:
+        logger.error(f"Kundli generation error: {e}")
+        raise HTTPException(status_code=500, detail=f"Kundli generation failed: {str(e)}")
+
+    # Calculate Graha scores
+    scores = calculate_graha_scores(kundli["planets"])
+    recommendations = get_top_recommendations(scores)
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Save to database
+    kundli_doc = {
+        "user_id": admin["_id"],
+        "name": name,
+        "gender": gender,
+        "dob": dob,
+        "tob": tob,
+        "birth_place": place,
+        "location": kundli["location"],
+        "ascendant": kundli["ascendant"],
+        "planets": kundli["planets"],
+        "graha_scores": scores,
+        "top_recommendations": recommendations,
+        "julian_day": kundli["julian_day"],
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    # Upsert (replace if same user has existing kundli)
+    existing = await db.kundli_data.find_one({"user_id": admin["_id"]})
+    if existing:
+        await db.kundli_data.update_one({"_id": existing["_id"]}, {"$set": kundli_doc})
+        kundli_id = str(existing["_id"])
+    else:
+        result = await db.kundli_data.insert_one(kundli_doc)
+        kundli_id = str(result.inserted_id)
+
+    # Save graha scores separately
+    await db.graha_scores.delete_many({"kundli_id": kundli_id})
+    for s in scores:
+        await db.graha_scores.insert_one({
+            "kundli_id": kundli_id,
+            "user_id": admin["_id"],
+            "graha": s["graha"],
+            "graha_hi": s["graha_hi"],
+            "score": s["score"],
+            "priority": s["priority"],
+            "reasons": s["reasons"],
+            "recommendation": s["recommendation"],
+            "planet_data": s["planet_data"],
+            "created_at": now,
+        })
+
+    # Save daily recommendation
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    await db.daily_recommendations.delete_many({"user_id": admin["_id"], "date": today})
+    for rec in recommendations:
+        await db.daily_recommendations.insert_one({
+            "user_id": admin["_id"],
+            "kundli_id": kundli_id,
+            "graha": rec["graha"],
+            "graha_hi": rec["graha_hi"],
+            "score": rec["score"],
+            "mantra": rec["recommendation"]["mantra"],
+            "devta_hi": rec["recommendation"]["devta_hi"],
+            "count": rec["recommendation"]["count"],
+            "day_hi": rec["recommendation"]["day_hi"],
+            "reasons": rec["reasons"],
+            "date": today,
+            "created_at": now,
+        })
+
+    # Seed mantras collection
+    for graha, info in GRAHA_MANTRA_MAP.items():
+        await db.mantras.update_one(
+            {"graha": graha},
+            {"$set": {"graha": graha, "graha_hi": GRAHA_NAMES_HI.get(graha, graha), **info}},
+            upsert=True
+        )
+
+    return {
+        "kundli_id": kundli_id,
+        "ascendant": kundli["ascendant"],
+        "planets": kundli["planets"],
+        "graha_scores": scores,
+        "recommendations": recommendations,
+    }
+
+
+@api_router.get("/kundli/my")
+async def get_my_kundli(request: Request, admin: dict = Depends(get_current_admin)):
+    """Get current user's stored Kundli data."""
+    kundli = await db.kundli_data.find_one({"user_id": admin["_id"]})
+    if not kundli:
+        return {"kundli": None, "message": "No Kundli found. Generate one first."}
+    return serialize_doc(kundli)
+
+
+@api_router.post("/graha/score")
+async def compute_graha_scores(request: Request, admin: dict = Depends(get_current_admin)):
+    """Recompute Graha scores for existing Kundli."""
+    body = await request.json()
+    kundli_id = body.get("kundli_id", "")
+
+    if kundli_id:
+        kundli = await db.kundli_data.find_one({"_id": ObjectId(kundli_id)})
+    else:
+        kundli = await db.kundli_data.find_one({"user_id": admin["_id"]})
+
+    if not kundli:
+        raise HTTPException(status_code=404, detail="Kundli not found")
+
+    scores = calculate_graha_scores(kundli["planets"])
+    recommendations = get_top_recommendations(scores)
+
+    return {"graha_scores": scores, "recommendations": recommendations}
+
+
+@api_router.get("/recommendations/mantra")
+async def get_mantra_recommendations(request: Request, admin: dict = Depends(get_current_admin)):
+    """Get top 1-2 personalized mantra recommendations for today."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    # Check if we have today's recommendations
+    recs = await db.daily_recommendations.find({"user_id": admin["_id"], "date": today}).to_list(5)
+    if recs:
+        return {"date": today, "recommendations": [serialize_doc(r) for r in recs]}
+
+    # Else compute from stored kundli
+    kundli = await db.kundli_data.find_one({"user_id": admin["_id"]})
+    if not kundli:
+        return {"date": today, "recommendations": [], "message": "Generate Kundli first"}
+
+    scores = calculate_graha_scores(kundli["planets"])
+    recommendations = get_top_recommendations(scores)
+
+    for rec in recommendations:
+        await db.daily_recommendations.insert_one({
+            "user_id": admin["_id"],
+            "graha": rec["graha"],
+            "graha_hi": rec["graha_hi"],
+            "score": rec["score"],
+            "mantra": rec["recommendation"]["mantra"],
+            "devta_hi": rec["recommendation"]["devta_hi"],
+            "count": rec["recommendation"]["count"],
+            "day_hi": rec["recommendation"]["day_hi"],
+            "remedy_hi": rec["recommendation"]["remedy_hi"],
+            "reasons": rec["reasons"],
+            "date": today,
+        })
+
+    return {"date": today, "recommendations": [{"graha": r["graha"], "graha_hi": r["graha_hi"], "score": r["score"], "recommendation": r["recommendation"], "reasons": r["reasons"]} for r in recommendations]}
+
+
+@api_router.get("/mantras/all")
+async def get_all_mantras():
+    """Get all Graha → Devta → Mantra mappings."""
+    mantras = await db.mantras.find({}).to_list(20)
+    if not mantras:
+        # Seed if empty
+        for graha, info in GRAHA_MANTRA_MAP.items():
+            await db.mantras.insert_one({"graha": graha, "graha_hi": GRAHA_NAMES_HI.get(graha, graha), **info})
+        mantras = await db.mantras.find({}).to_list(20)
+    return [serialize_doc(m) for m in mantras]
+
+
 # ===================== ROOT =====================
 
 @api_router.get("/")
