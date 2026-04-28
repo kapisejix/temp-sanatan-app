@@ -11,49 +11,54 @@ Multilingual spiritual platform: React Admin Panel + FastAPI Backend + Expo Mobi
 ### Session 4: Graha-based Mantra + Multilingual TTS (Google/OpenAI/ElevenLabs switchable)
 ### Session 5: AI + Rule-Based Astrology Intelligence (Vimshottari Dasha, Doshas, D9, AI Hybrid Layer, Charts)
 ### Session 6: Voice + Mobile App scaffold (browser STT + speaker, Expo 5-tab + AI chat modal)
+### Session 7: Mobile Live Backend + APScheduler + VS Code/TTS guides
 
-### Session 7: Mobile Live Backend + P1 Items (Feb 2026 — current)
-- **Mobile API Client** (`src/api/client.js`):
-  - axios + AsyncStorage token persistence
-  - Auto-login with default admin credentials
-  - 401 retry with re-login interceptor
-  - Public + authenticated method namespaces
-- **Mobile Hooks** (`src/hooks/useApiData.js`) — universal data fetcher with mock fallback
-- **Live screens** — HomeScreen, KundliScreen, PanchangScreen, AIChatScreen now hit real backend
-- **HomeScreen Audio** — `▶ सुनें` button calls `/api/tts/synthesize` and plays MP3 via Expo AV
-- **AIChatScreen** — uses `/api/vedachat/message` (Claude); offline fallback maintained
-- **New Backend Endpoints** (`mobile_extras.py`):
-  - `GET /api/mobile/panchang/today` — real Swiss Ephemeris Tithi/Nakshatra/Yoga/Karana/Sunrise/Sunset/Rahu Kaal per lat/lon/tz; verified Delhi/Mumbai/Chennai give correct location-specific values
-  - `GET /api/mobile/mantra-of-day` — public day-based mantra (rotates by weekday)
-- **APScheduler** — daily 06:00 IST job creating notifications for all users with kundli (day-based + personalised + Sade Sati alerts)
-- **VS Code + Expo Go Setup Guide** (`/app/expo-app/VS_CODE_EXPO_GO_SETUP.md`)
-  - Step-by-step from Node install → Expo Go on phone → hot reload workflow
-  - Recommended VS Code extensions
-  - Troubleshooting matrix
-  - Tunnel mode for different Wi-Fi
-  - EAS build instructions for APK/IPA
-- **Google Cloud TTS Setup Guide** (`/app/expo-app/GOOGLE_CLOUD_TTS_SETUP.md`)
-  - Step-by-step Google Cloud project + service account JSON
-  - Cost estimates (free tier covers personal use)
-  - Switching to OpenAI / ElevenLabs without code changes
+### Session 8: Mobile Navigation Overhaul + Intent-Based Bhakti (Feb 2026 — current)
+- **Per-tab Stack architecture** in App.js — fixes "inner links don't work":
+  - HomeStack, BhaktiStack (11 inner screens), KundliStack, PanchangStack, ProfileStack
+  - AIChat as RootStack modal (accessible from any tab)
+- **SafeAreaProvider + `SafeScreen` wrapper** — every screen now respects status bar + home indicator (no UI overlap on any phone)
+- **Intent-based Bhakti navigation**:
+  - By Deity → DeityDetailScreen → ContentDetailScreen (full text + Expo AV audio)
+  - Daily Bhakti → ContentDetailScreen
+  - Explore → Kathas / Granth / Vedas & Puranas
+- **Kathas flow**: Satyanarayan & Bhagwat with Read 📖 / Listen 🎧 toggle
+- **Granth flow** (live admin DB):
+  - GranthListScreen → fetches `/api/granth/books`
+  - GranthChaptersScreen → `/api/granth/hierarchy/{book_id}`
+  - GranthVersesScreen → `/api/granth/chapter-verses/{chapter_id}` with Sanskrit + Hindi meaning + per-verse ▶ TTS
+- **Vedas flow** (live admin DB):
+  - VedasPuranasScreen → 4 Vedas list + Puranas grid (3 available + 3 Coming Soon)
+  - VedaSuktasScreen → `/api/vedas/hierarchy/{id}`
+  - PuranaDetailScreen → intro + chapter placeholder
+- **DEITY_CONTENT** with full Hindi text:
+  - Hanuman: Chalisa (full 40 chaupais), Aarti, Bajrang Baan
+  - Shiva: Mahamrityunjaya, Aarti, Tandav Stotram (excerpt)
+  - Krishna: Aarti, Moola Mantra
+  - Durga: Aarti (Jay Ambe Gauri), Beej Mantra
+  - Ganesha: Aarti, Moola Mantra
+  - Rama: Tarak Mantra, Aarti
+- **Audio playback** via Expo AV calling `/api/tts/synthesize` (graceful degradation when TTS not configured)
+- **Quick Actions** on Home now correctly switch between tabs via `getParent()?.navigate(tab)`
+- README.md fully rewritten with test flow checklist
 
 ## Architecture
 - Backend: FastAPI + MongoDB + APScheduler + Swiss Ephemeris + emergentintegrations (Claude)
 - Admin Panel: React.js
-- Mobile App: Expo / React Native (axios client → live backend with mock fallback)
+- Mobile App: Expo / React Native — per-tab Stack + SafeAreaProvider, axios client → live backend
 - AI: Claude via Emergent LLM Key
 - TTS: Switchable (Google / OpenAI / ElevenLabs)
-- Voice STT: Browser Web Speech API (Web only; mobile can add Expo Speech Recognition later)
+- Voice STT: Browser Web Speech API (Web)
 
-## DB Collections
-- `kundli_data` — Full Kundli + d9 + dasha + dosha + ai_cache + top_recommendations
-- `tts_cache` — Base64 audio cache by hash
-- `notifications` — Daily notification log (auto-populated by APScheduler 06:00 IST)
-- `integration_settings` — TTS provider + API keys
-- `mantras`, `graha_scores`, `daily_recommendations` — supporting collections
+## Tested Flows (iteration_8 — 20/20 backend + structural)
+- Bhakti → Hanuman → Hanuman Chalisa → ▶ Play
+- Bhakti → Explore → Kathas → Satyanarayan → 📖 Read / 🎧 Listen
+- Bhakti → Explore → Granth → Bhagavad Gita → Chapter 1 (अर्जुन विषाद योग) → Verses (Sanskrit + Hindi)
+- Bhakti → Explore → Vedas & Puranas → Rig Veda → Sukta list
+- Home Quick Action → switches tab properly
+- Floating 🤖 → AI Chat modal from any tab
 
 ## Backlog
-### P1 — All COMPLETE this session ✅
 ### P2
 - [ ] User signup/login screen on mobile (currently auto-admin)
 - [ ] Pratyantardasha (3rd-level dasha)
@@ -61,22 +66,19 @@ Multilingual spiritual platform: React Admin Panel + FastAPI Backend + Expo Mobi
 - [ ] Refactor `server.py` (~5100 lines) → `routes/` modules
 - [ ] Push notifications via Expo Notifications + OneSignal
 - [ ] EAS build configs for Play Store + App Store
-- [ ] Mobile Bhakti screen — connect to /api/content/categories
-- [ ] Server-side bulk write optimisation
 - [ ] Native voice STT on mobile (Expo Speech Recognition)
-- [ ] Pratyantar Dasha for mobile
+- [ ] Bulk content import for Puranas (currently placeholder)
+- [ ] Search bar functionality on Bhakti screen (currently UI-only)
 
 ## Key API Endpoints
 ### Public (no auth)
-- `GET /api/mobile/panchang/today` (real Swiss Ephemeris)
-- `GET /api/mobile/mantra-of-day`
-- `POST /api/auth/admin/login`
+- `GET /api/mobile/panchang/today`, `GET /api/mobile/mantra-of-day`
+- `GET /api/granth/books`, `GET /api/granth/hierarchy/{book_id}`, `GET /api/granth/chapter-verses/{chapter_id}`
+- `GET /api/vedas/books`, `GET /api/vedas/hierarchy/{book_id}`, `GET /api/vedas/chapter-verses/{chapter_id}`
 
 ### Authenticated
 - `POST /api/kundli/generate`, `GET /api/kundli/my`
 - `GET /api/dasha/current`, `POST /api/dasha/interpret`
 - `GET /api/dosha/detect`, `POST /api/dosha/interpret`
-- `GET /api/charts/d1-d9`
-- `GET /api/insights/today`, `GET /api/notifications/today`
-- `POST /api/tts/synthesize`, `GET /api/tts/providers`
-- `POST /api/vedachat/message`
+- `GET /api/charts/d1-d9`, `GET /api/insights/today`, `GET /api/notifications/today`
+- `POST /api/tts/synthesize`, `POST /api/vedachat/message`
