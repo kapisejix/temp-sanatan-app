@@ -1,0 +1,136 @@
+{
+  "project_name": "Sanatan Saathi Admin Panel",
+  "theme": "light",
+  "archetype": "1 (Organic & Earthy)",
+  "emotional_tone": "Authoritative, serene, structured, and culturally rooted.",
+  "colors": {
+    "background": {
+      "default": "bg-stone-50",
+      "hex": "#FAFAF9",
+      "description": "Warm, earthy off-white to reduce eye strain for content editors."
+    },
+    "surface": {
+      "default": "bg-white",
+      "hex": "#FFFFFF",
+      "description": "Pure white for content cards and tables to maintain high contrast."
+    },
+    "primary": {
+      "default": "bg-orange-600",
+      "hover": "hover:bg-orange-700",
+      "text": "text-white",
+      "hex": "#EA580C",
+      "description": "Saffron/Bhagwa accent. Used sparingly for primary CTAs (e.g., 'Publish', 'Upload Docs')."
+    },
+    "secondary": {
+      "default": "bg-stone-800",
+      "hover": "hover:bg-stone-900",
+      "text": "text-stone-50",
+      "description": "Deep charcoal for secondary actions and heavy data headers."
+    },
+    "accent_success": {
+      "default": "bg-emerald-600",
+      "text": "text-emerald-700",
+      "description": "Used for 'Live', 'Published', or 'Synced' statuses."
+    },
+    "borders": {
+      "default": "border-stone-200",
+      "focus": "focus:ring-orange-500/50 focus:border-orange-500",
+      "description": "Subtle structured dividers."
+    },
+    "text": {
+      "heading": "text-stone-900",
+      "body": "text-stone-700",
+      "muted": "text-stone-500"
+    }
+  },
+  "typography": {
+    "fonts": {
+      "heading": "font-serif",
+      "heading_family": "Cormorant Garamond",
+      "body": "font-sans",
+      "body_family": "Manrope",
+      "import_url": "https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=Manrope:wght@400;500;600;700&display=swap"
+    },
+    "scale": {
+      "h1": "text-3xl md:text-4xl font-serif font-medium tracking-tight text-stone-900",
+      "h2": "text-xl md:text-2xl font-serif font-medium tracking-tight text-stone-900",
+      "h3": "text-lg font-sans font-semibold text-stone-800",
+      "body": "text-sm text-stone-700 leading-relaxed font-sans",
+      "label": "text-xs uppercase tracking-[0.2em] font-bold text-stone-500",
+      "nav_link": "text-sm font-medium text-stone-600 hover:text-stone-900"
+    }
+  },
+  "spacing_and_layout": {
+    "strategy": "The 'Control Room' Grid",
+    "sidebar": "w-64 fixed h-full border-r border-stone-200 bg-stone-50 z-40",
+    "topbar": "h-16 border-b border-stone-200 bg-white/70 backdrop-blur-xl sticky top-0 z-30 flex items-center px-6",
+    "main_content": "ml-64 p-6 md:p-8 min-h-screen",
+    "grid_system": "grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6",
+    "container_padding": "p-6",
+    "multilingual_editor_layout": {
+      "description": "Defensive layout for multilingual translations.",
+      "structure": "Split pane. Left: Source (Sanskrit/Hindi). Right: Target Language Editor. Language selector must be a scrollable horizontal Shadcn Tab bar."
+    }
+  },
+  "surfaces_and_borders": {
+    "card_style": "bg-white border border-stone-200 rounded-xl shadow-sm",
+    "table_style": "w-full text-left border-collapse",
+    "table_header": "bg-stone-50 border-b border-stone-200 text-xs uppercase tracking-wider text-stone-500 font-semibold py-3 px-4",
+    "table_cell": "border-b border-stone-100 py-3 px-4 text-sm text-stone-700",
+    "inputs": "bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 text-sm focus:bg-white transition-colors focus:outline-none focus:ring-2 focus:ring-orange-500/30",
+    "dropdowns": "bg-white border border-stone-200 shadow-lg rounded-lg overflow-hidden"
+  },
+  "components": {
+    "library": "Shadcn UI",
+    "modifications": [
+      "Buttons: rounded-lg. Primary button uses Saffron (orange-600).",
+      "Tabs: h-auto instead of fixed h-9. bg-stone-100 for the list, with white active tab and orange-600 active text.",
+      "Cards: Remove heavy shadows, rely on 1px border-stone-200.",
+      "Badges: Soft variations. bg-orange-100 text-orange-800 for 'Draft'. bg-emerald-100 text-emerald-800 for 'Published'."
+    ],
+    "custom_patterns": {
+      "verse_manager": "Inline word mapping using Shadcn Badges. Wrap words in clickable badges to open a popover for meaning entry.",
+      "import_wizard": "Stepper component with file upload dropzone. Dropzone should be dashed border-stone-300 bg-stone-50 hover:bg-stone-100 p-12 text-center."
+    }
+  },
+  "motion_and_interaction": {
+    "hover": "transition-colors duration-200 ease-in-out",
+    "table_row_hover": "hover:bg-stone-50",
+    "button_active": "active:scale-[0.98]",
+    "tabs": "Smooth fade on content switch.",
+    "accessibility": "Always explicit focus rings (focus:ring-2 focus:ring-offset-2 focus:ring-orange-500)."
+  },
+  "icons": {
+    "library": "@phosphor-icons/react",
+    "style": "Duotone",
+    "installation": "yarn add @phosphor-icons/react",
+    "usage": "Use size 20 for standard inline icons, 24 for sidebar."
+  },
+  "image_urls": {
+    "login_background": {
+      "url": "https://images.pexels.com/photos/6634235/pexels-photo-6634235.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Minimalist spiritual background with an incense holder on a warm backdrop. Perfect for the Admin Panel login screen."
+    },
+    "default_granth_cover": {
+      "url": "https://images.pexels.com/photos/7686377/pexels-photo-7686377.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Vibrant traditional Hindu items (diyas, fabric). Use as a placeholder cover for Sacred Texts or Bhakti Categories if no image is uploaded."
+    },
+    "om_symbol_placeholder": {
+      "url": "https://images.unsplash.com/photo-1631879742203-3e670744cf2c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2MzR8MHwxfHNlYXJjaHwyfHxzcGlyaXR1YWwlMjBoaW5kdSUyMG9tJTIwYmFja2dyb3VuZHxlbnwwfHx8fDE3NzczNTY4NTd8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Monochrome Om symbol texture for generic spiritual placeholders or empty states."
+    }
+  },
+  "instructions_to_main_agent": [
+    "Load 'Cormorant Garamond' and 'Manrope' from Google Fonts in index.html.",
+    "Set up Tailwind config with custom font families (sans: Manrope, serif: Cormorant Garamond) and the exact colors defined above.",
+    "Implement the 'Control Room' grid layout for the main dashboard (dense, highly utilized space).",
+    "Sidebar must be persistent on desktop, tucked into a hamburger menu on mobile.",
+    "For the Multilingual Tabs, use Shadcn Tabs but override strict heights. Ensure it gracefully scrolls horizontally if 12+ languages are loaded.",
+    "The Verse Manager is critical: use a split-screen or side-by-side card layout to compare original Sanskrit against the selected language translation.",
+    "Apply `data-testid` to EVERY interactive element (e.g., `data-testid=\"upload-docx-btn\"`, `data-testid=\"lang-tab-hi\"`).",
+    "Do NOT use raw HTML `<select>` or `<input type=\"date\">`. Strictly use Shadcn Select, DropdownMenu, and Calendar.",
+    "Use Phosphor Icons (Duotone) for sidebar navigation and action buttons.",
+    "Login screen should be a 50/50 split layout. Left side: The login form (clean, centered). Right side: The `login_background` image covering the full height.",
+    "Ensure the Panchang Settings and VedaChat settings use Shadcn Forms with Card containers."
+  ]
+}
