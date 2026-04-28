@@ -1,100 +1,81 @@
 import React from 'react';
-import { StatusBar, ActivityIndicator, View } from 'react-native';
-import { NavigationContainer } from '@react-navigation/native';
+import { StatusBar, View } from 'react-native';
+import { NavigationContainer, useNavigation } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { AuthProvider, useAuth } from './src/store/authStore';
+import { Text } from 'react-native';
 import { COLORS } from './src/config/api';
 
-import AuthScreen from './src/screens/AuthScreen';
-import HomeScreen from './src/screens/HomeScreen';
-import VedicMantrasScreen from './src/screens/VedicMantrasScreen';
-import DivyaGranthScreen from './src/screens/DivyaGranthScreen';
-import VedasScreen from './src/screens/VedasScreen';
-import VedaChatScreen from './src/screens/VedaChatScreen';
-import CategoryListScreen from './src/screens/CategoryListScreen';
-import ContentDetailScreen from './src/screens/ContentDetailScreen';
-import BirthChartScreen from './src/screens/BirthChartScreen';
+import HomeScreen from './src/screens/v2/HomeScreen';
+import BhaktiScreen from './src/screens/v2/BhaktiScreen';
+import KundliScreen from './src/screens/v2/KundliScreen';
+import PanchangScreen from './src/screens/v2/PanchangScreen';
+import ProfileScreen from './src/screens/v2/ProfileScreen';
+import AIChatScreen from './src/screens/v2/AIChatScreen';
+import FloatingAIButton from './src/components/FloatingAIButton';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
 
-const screenOptions = {
-  headerStyle: { backgroundColor: '#FFFFFF' },
-  headerTintColor: COLORS.text,
-  headerShadowVisible: false,
+const TAB_ICONS = {
+  Home: { active: '🏠', label_hi: 'होम' },
+  Bhakti: { active: '🪔', label_hi: 'भक्ति' },
+  Kundli: { active: '🔮', label_hi: 'कुंडली' },
+  Panchang: { active: '📅', label_hi: 'पंचांग' },
+  Profile: { active: '👤', label_hi: 'प्रोफ़ाइल' },
 };
 
-function HomeStack() {
-  return (
-    <Stack.Navigator screenOptions={screenOptions}>
-      <Stack.Screen name="HomeMain" component={HomeScreen} options={{ headerShown: false }} />
-      <Stack.Screen name="CategoryList" component={CategoryListScreen} options={({ route }) => ({ title: route.params?.title || 'Content' })} />
-      <Stack.Screen name="ContentDetail" component={ContentDetailScreen} options={{ headerShown: false }} />
-      <Stack.Screen name="BirthChart" component={BirthChartScreen} options={{ title: 'Birth Chart' }} />
-    </Stack.Navigator>
-  );
-}
-
-function VedicStack() {
-  return (
-    <Stack.Navigator screenOptions={screenOptions}>
-      <Stack.Screen name="VedicMain" component={VedicMantrasScreen} options={{ headerShown: false }} />
-      <Stack.Screen name="CategoryList" component={CategoryListScreen} options={({ route }) => ({ title: route.params?.title || 'Content' })} />
-      <Stack.Screen name="ContentDetail" component={ContentDetailScreen} options={{ headerShown: false }} />
-    </Stack.Navigator>
-  );
+function TabScreenWithFAB(Screen) {
+  return (props) => {
+    const navigation = useNavigation();
+    return (
+      <View style={{ flex: 1 }}>
+        <Screen {...props} />
+        <FloatingAIButton onPress={() => navigation.navigate('AIChat')} />
+      </View>
+    );
+  };
 }
 
 function MainTabs() {
   return (
     <Tab.Navigator
-      screenOptions={{
+      screenOptions={({ route }) => ({
         headerShown: false,
-        tabBarStyle: {
-          backgroundColor: '#FFFFFF',
-          borderTopColor: COLORS.border,
-          height: 85,
-          paddingBottom: 28,
-          paddingTop: 8,
-        },
         tabBarActiveTintColor: COLORS.primary,
         tabBarInactiveTintColor: COLORS.textMuted,
-        tabBarLabelStyle: { fontSize: 11, fontWeight: '600' },
-      }}
+        tabBarStyle: {
+          backgroundColor: COLORS.surface,
+          borderTopWidth: 1,
+          borderTopColor: COLORS.border,
+          paddingTop: 6,
+          paddingBottom: 8,
+          height: 64,
+        },
+        tabBarLabelStyle: { fontSize: 11, fontWeight: '700' },
+        tabBarIcon: () => (
+          <Text style={{ fontSize: 22 }}>{TAB_ICONS[route.name].active}</Text>
+        ),
+        tabBarLabel: TAB_ICONS[route.name].label_hi,
+      })}
     >
-      <Tab.Screen name="Home" component={HomeStack} options={{ tabBarLabel: 'Home' }} />
-      <Tab.Screen name="Mantras" component={VedicStack} options={{ tabBarLabel: 'Mantras' }} />
-      <Tab.Screen name="Granth" component={DivyaGranthScreen} options={{ tabBarLabel: 'Granth' }} />
-      <Tab.Screen name="Vedas" component={VedasScreen} options={{ tabBarLabel: 'Vedas' }} />
-      <Tab.Screen name="Chat" component={VedaChatScreen} options={{ tabBarLabel: 'VedaChat', headerShown: true, title: 'VedaChat AI' }} />
+      <Tab.Screen name="Home" component={TabScreenWithFAB(HomeScreen)} />
+      <Tab.Screen name="Bhakti" component={TabScreenWithFAB(BhaktiScreen)} />
+      <Tab.Screen name="Kundli" component={TabScreenWithFAB(KundliScreen)} />
+      <Tab.Screen name="Panchang" component={TabScreenWithFAB(PanchangScreen)} />
+      <Tab.Screen name="Profile" component={TabScreenWithFAB(ProfileScreen)} />
     </Tab.Navigator>
-  );
-}
-
-function AppContent() {
-  const { user, loading } = useAuth();
-
-  if (loading) {
-    return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.background }}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
-      </View>
-    );
-  }
-
-  return (
-    <NavigationContainer>
-      <StatusBar barStyle="dark-content" backgroundColor={COLORS.background} />
-      {user ? <MainTabs /> : <AuthScreen />}
-    </NavigationContainer>
   );
 }
 
 export default function App() {
   return (
-    <AuthProvider>
-      <AppContent />
-    </AuthProvider>
+    <NavigationContainer>
+      <StatusBar barStyle="dark-content" backgroundColor={COLORS.background} />
+      <Stack.Navigator screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="Tabs" component={MainTabs} />
+        <Stack.Screen name="AIChat" component={AIChatScreen} options={{ presentation: 'modal' }} />
+      </Stack.Navigator>
+    </NavigationContainer>
   );
 }

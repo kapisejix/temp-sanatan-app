@@ -1,6 +1,8 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { Send, Plus, Trash2, MessageCircle, Loader2, Bot, User, Upload, FileText, BookOpen, X, Database, Check } from 'lucide-react';
+import { Send, Plus, Trash2, MessageCircle, Loader2, Bot, User, Upload, FileText, BookOpen, X, Database, Check, Mic, MicOff, Globe2 } from 'lucide-react';
+import useSpeechRecognition from '../hooks/useSpeechRecognition';
+import SpeakerButton from '../components/SpeakerButton';
 
 export default function VedaChatPage() {
   const { api } = useAuth();
@@ -15,7 +17,25 @@ export default function VedaChatPage() {
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState(null);
   const [knowledgeStats, setKnowledgeStats] = useState(null);
+  const [voiceLang, setVoiceLang] = useState('hi-IN');
+  const [autoSpeak, setAutoSpeak] = useState(false);
   const messagesEndRef = useRef(null);
+  const speechRec = useSpeechRecognition({ language: voiceLang });
+
+  // Sync voice transcript to input
+  useEffect(() => {
+    if (speechRec.transcript) setInput(speechRec.transcript);
+  }, [speechRec.transcript]);
+
+  // Auto-send when listening stops with final transcript
+  useEffect(() => {
+    if (!speechRec.listening && speechRec.transcript && speechRec.transcript.trim().length > 1) {
+      const text = speechRec.transcript.trim();
+      sendVoiceMessage(text);
+      speechRec.reset();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [speechRec.listening]);
 
   const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
 
@@ -65,9 +85,47 @@ export default function VedaChatPage() {
       if (!activeConv && data.conversation_id) setActiveConv(data.conversation_id);
       setMessages(prev => [...prev, data.response]);
       fetchConversations();
+      // Auto-speak response if enabled
+      if (autoSpeak && data.response?.content) {
+        try {
+          const lang = /[\u0900-\u097F]/.test(data.response.content) ? 'hi' : 'en';
+          const tts = await api.post('/tts/synthesize', { text: data.response.content.slice(0, 4000), language: lang });
+          const audio = new Audio(`data:audio/mpeg;base64,${tts.data.audio_base64}`);
+          audio.play();
+        } catch (e) { /* TTS optional */ }
+      }
     } catch (err) {
       setMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, I encountered an error. Please try again.', timestamp: new Date().toISOString() }]);
     } finally { setLoading(false); }
+  };
+
+  // Send a voice-recognised message (separate to avoid race with input clearing)
+  const sendVoiceMessage = async (text) => {
+    if (!text || loading) return;
+    setInput('');
+    setMessages(prev => [...prev, { role: 'user', content: text, timestamp: new Date().toISOString() }]);
+    setLoading(true);
+    try {
+      const { data } = await api.post('/vedachat/message', { message: text, conversation_id: activeConv });
+      if (!activeConv && data.conversation_id) setActiveConv(data.conversation_id);
+      setMessages(prev => [...prev, data.response]);
+      fetchConversations();
+      if (autoSpeak && data.response?.content) {
+        try {
+          const lang = /[\u0900-\u097F]/.test(data.response.content) ? 'hi' : 'en';
+          const tts = await api.post('/tts/synthesize', { text: data.response.content.slice(0, 4000), language: lang });
+          const audio = new Audio(`data:audio/mpeg;base64,${tts.data.audio_base64}`);
+          audio.play();
+        } catch (e) { /* TTS optional */ }
+      }
+    } catch (err) {
+      setMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, error occurred.', timestamp: new Date().toISOString() }]);
+    } finally { setLoading(false); }
+  };
+
+  const toggleVoice = () => {
+    if (speechRec.listening) speechRec.stop();
+    else speechRec.start();
   };
 
   const deleteConversation = async (convId) => {
@@ -213,6 +271,11 @@ export default function VedaChatPage() {
                 msg.role === 'user' ? 'bg-[#E95A34] text-white rounded-br-sm' : 'bg-[#F8F3F1] border border-[#E8E4E1] text-[#374652] rounded-bl-sm'
               }`}>
                 {renderMessage(msg)}
+                {msg.role === 'assistant' && msg.content && (
+                  <div className="mt-2 pt-2 border-t border-[#E8E4E1]">
+                    <SpeakerButton text={msg.content} label="उत्तर सुनें" size={12} />
+                  </div>
+                )}
               </div>
               {msg.role === 'user' && (
                 <div className="w-8 h-8 bg-[#FDDDD4] rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5">
@@ -233,10 +296,66 @@ export default function VedaChatPage() {
         </div>
 
         <div className="px-6 py-4 border-t border-[#E8E4E1]">
+          {/* Voice controls */}
+          <div className="flex items-center gap-2 mb-2 flex-wrap text-xs">
+            <span className="text-[#7A8690]">वॉइस:</span>
+            <select
+              value={voiceLang}
+              onChange={(e) => setVoiceLang(e.target.value)}
+              disabled={speechRec.listening}
+              className="px-2 py-1 border border-[#E8E4E1] rounded-md bg-white text-[#374652]"
+              data-testid="voice-lang-select"
+            >
+              <option value="hi-IN">हिन्दी (Hindi)</option>
+              <option value="en-IN">English (India)</option>
+              <option value="en-US">English (US)</option>
+              <option value="sa">Sanskrit (Devanagari fallback)</option>
+              <option value="ta-IN">தமிழ் (Tamil)</option>
+              <option value="te-IN">తెలుగు (Telugu)</option>
+              <option value="bn-IN">বাংলা (Bengali)</option>
+              <option value="mr-IN">मराठी (Marathi)</option>
+              <option value="gu-IN">ગુજરાતી (Gujarati)</option>
+            </select>
+            <label className="flex items-center gap-1.5 cursor-pointer ml-2">
+              <input
+                type="checkbox"
+                checked={autoSpeak}
+                onChange={(e) => setAutoSpeak(e.target.checked)}
+                className="accent-[#E95A34]"
+                data-testid="auto-speak-toggle"
+              />
+              <span className="text-[#7A8690]">उत्तर सुनाएँ (auto-speak)</span>
+            </label>
+            {!speechRec.supported && (
+              <span className="text-[10px] text-amber-700 ml-auto">वॉइस इनपुट इस ब्राउज़र में समर्थित नहीं — Chrome/Edge उपयोग करें</span>
+            )}
+            {speechRec.listening && (
+              <span className="text-[10px] text-[#E95A34] ml-auto flex items-center gap-1 animate-pulse">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#E95A34]" /> सुन रहा हूँ… {speechRec.interim && `"${speechRec.interim}"`}
+              </span>
+            )}
+            {speechRec.error && (
+              <span className="text-[10px] text-red-600 ml-auto">{speechRec.error}</span>
+            )}
+          </div>
           <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={toggleVoice}
+              disabled={!speechRec.supported || loading}
+              className={`px-3 py-2.5 rounded-lg transition-colors disabled:opacity-50 flex-shrink-0 ${
+                speechRec.listening
+                  ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse'
+                  : 'bg-[#FEF0EC] hover:bg-[#FDDDD4] text-[#E95A34] border border-[#FDDDD4]'
+              }`}
+              title={speechRec.listening ? 'रोकें' : 'बोलकर पूछें'}
+              data-testid="voice-input-btn"
+            >
+              {speechRec.listening ? <MicOff size={16} /> : <Mic size={16} />}
+            </button>
             <input value={input} onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && sendMessage()}
-              placeholder="Ask about scriptures, rituals, mantras..."
+              placeholder={speechRec.listening ? 'बोलिए… (recording)' : 'Ask about scriptures, rituals, mantras... or click 🎤'}
               className="flex-1 px-4 py-2.5 bg-[#F8F3F1] border border-[#E8E4E1] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#E95A34]"
               disabled={loading} data-testid="chat-input" />
             <button onClick={sendMessage} disabled={loading || !input.trim()}

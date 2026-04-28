@@ -1,0 +1,55 @@
+{
+  "summary": "Frontend-only testing for iteration 5 (VedaChat voice + auto-speak + 9-lang select, regression on Dashboard/Kundli) and Mobile App static verification (file existence, exports, top-tabs, package deps, ESLint). All 14 requested checks passed.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "VedaChatPage.js (433 lines) is approaching the 700-line guideline limit but acceptable; SpeakerButton + voice controls are well-componentized.",
+    "useSpeechRecognition cleanup correctly stops recognition on unmount and re-initializes when language changes.",
+    "SpeakerButton TTS error message is hard-coded in Hindi only — consider showing a fallback English string when Devanagari is not present in the page locale.",
+    "VedaChatPage `sendMessage` and `sendVoiceMessage` duplicate ~20 lines (DRY violation) — could be extracted into a single helper that takes the text param. Minor, not blocking.",
+    "auto-speak path calls /api/tts/synthesize but swallows errors silently with empty catch — user gets no feedback if TTS toggled but mis-configured. Consider surfacing the same red-error banner used by SpeakerButton."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (skipped per request)", "frontend": "100%"},
+  "test_credentials": "admin@sanatansaathi.com / SanatanAdmin@2026 — login successful via /login (note: /admin/login is NOT a route, /login is the correct path)",
+  "seed_data_creation": "none",
+  "verified_checks": {
+    "vedachat_page_loads": true,
+    "voice_input_btn_present": true,
+    "voice_lang_select_present_with_9_options": true,
+    "voice_lang_default_hi_IN": true,
+    "auto_speak_toggle_present": true,
+    "placeholder_contains_mic_emoji": true,
+    "voice_btn_click_no_crash": true,
+    "message_send_renders_response": true,
+    "speaker_btn_with_label_उत्तर_सुनें": true,
+    "speaker_btn_graceful_error_no_crash": true,
+    "speaker_btn_error_msg": "TTS नहीं — Integration Hub में Google Cloud TTS कॉन्फ़िगर करें (graceful, page stays functional)",
+    "dashboard_आज_का_उपाय_present": true,
+    "kundli_dasha_dosha_D1_D9_all_present": true,
+    "expo_App_js_5_tabs_plus_AIChat_stack": true,
+    "expo_6_v2_screen_files_exist": ["HomeScreen", "BhaktiScreen", "KundliScreen", "PanchangScreen", "ProfileScreen", "AIChatScreen"],
+    "expo_FloatingAIButton_and_mockData_exist": true,
+    "mockData_exports_all_10_required": ["TODAY_UPAYA","CURRENT_DASHA","TODAY_PANCHANG","TRENDING_BHAKTI","DEITIES","BHAKTI_TYPES","KUNDLI_OVERVIEW","MONTHLY_PANCHANG","FESTIVALS","MUHURATS"],
+    "KundliScreen_4_top_tabs": ["Overview","Charts","Analysis","Remedies"],
+    "PanchangScreen_4_top_tabs": ["Today","Monthly","Festivals","Muhurat"],
+    "package_json_deps_present": ["expo","@react-navigation/native","@react-navigation/bottom-tabs","@react-navigation/native-stack","expo-av","react-native"],
+    "README_setup_and_QR_section": true,
+    "eslint_v2_screens_clean": true,
+    "eslint_App_js_clean": true,
+    "eslint_FloatingAIButton_clean": true
+  },
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Login URL is /login (NOT /admin/login). VedaChat is at /admin/vedachat. Google Cloud TTS is intentionally NOT configured — speaker-btn shows graceful Hindi error message which is the expected behavior. Backend skipped per main-agent instruction (unchanged from iteration_4). Mobile expo-app cannot be runtime-tested in container; only static checks (file existence + exports + ESLint) are feasible. All static checks pass.",
+  "rca of the issue": "n/a — no issues found"
+}
