@@ -2,7 +2,7 @@
 
 ## Vision
 Multilingual spiritual platform with React Admin Panel, FastAPI Backend, and Expo Mobile App.
-Features: Multilingual content (Aartis/Chalisas/Granths/Vedas), Import Wizard, Live Preview, VedaChat AI, and **Graha-based Mantra Recommendation System** powered by Swiss Ephemeris (deterministic — no AI guesswork).
+Features: Multilingual content (Aartis/Chalisas/Granths/Vedas), Import Wizard, Live Preview, VedaChat AI, **Graha-based Mantra Recommendation System**, and **AI + Rule-Based Astrology Intelligence System** powered by Swiss Ephemeris (deterministic — no AI guesswork in computation).
 
 ## What's Been Implemented
 
@@ -18,50 +18,72 @@ Features: Multilingual content (Aartis/Chalisas/Granths/Vedas), Import Wizard, L
 - Smart Search across all collections
 - Expo App API config + setup guide
 
-### Session 4 (Feb 2026): Graha-based Mantra System + Multilingual TTS
-- **Swiss Ephemeris Kundli Engine** (`/app/backend/kundli_engine.py`) — accurate planetary positions, Ascendant, Nakshatra, retrograde/combust detection
-- **Graha Scoring Engine** — 0-100 scoring based on Base Strength + Affliction (conjunctions/aspects) + House Impact; priorities HIGH/MEDIUM/LOW
-- **Mantra Recommendation** — Top 1-2 afflicted grahas mapped to Devta + Mantra + Chant Count + Day + Color + Remedy (Hindi + English)
-- Endpoints: `/api/kundli/generate`, `/api/kundli/my`, `/api/graha/score`, `/api/recommendations/mantra`, `/api/mantras/all`, `/api/notifications/today`
-- **Frontend `GrahaKundliPage`** — Multilingual (हि/EN toggle) form + Ascendant + Planets table + Graha Scores + Recommendations with Mantra Audio button
-- **Dashboard `आज का उपाय` Card** — Day-based + personalised mantra notifications (Hindi/English toggle)
-- Sidebar updated: "Nakshatra & Upaya" replaced by "Graha & Kundli"
-- **Switchable TTS Service** (`/app/backend/tts_service.py`) — Google Cloud TTS (primary), OpenAI TTS, ElevenLabs; provider chosen via Integration Hub
-- TTS supports 12 languages (hi, en, sa, ta, te, bn, mr, gu, kn, ml, pa, od)
-- TTS audio cached in MongoDB `tts_cache` collection by content+language+provider hash
-- Notification scheduler endpoint `/api/notifications/today` — DAY_TO_GRAHA mapping (Sun→Sun, Mon→Moon, Tue→Mars, Wed→Mercury, Thu→Jupiter, Fri→Venus, Sat→Saturn)
-- Pytest suite: `/app/backend/tests/test_graha_kundli.py` (8 tests, 100% pass)
+### Session 4: Graha-based Mantra System + Multilingual TTS (Feb 2026)
+- Swiss Ephemeris Kundli Engine (`kundli_engine.py`) — accurate planetary positions
+- Graha Scoring Engine — 0-100 + priorities HIGH/MEDIUM/LOW
+- Mantra Recommendation — Top 1-2 afflicted grahas → Devta + Mantra + Count + Day + Color + Remedy
+- `GrahaKundliPage` (हि/EN toggle), Dashboard `आज का उपाय` card
+- Switchable TTS (Google Cloud / OpenAI / ElevenLabs) via Integration Hub
+- 12-language voice mapping, MongoDB cache
+
+### Session 5: AI + Rule-Based Astrology Intelligence (Feb 2026, current)
+- **Vimshottari Dasha Engine** (`dasha_engine.py`) — 120-year cycle from Moon nakshatra; Mahadasha + Antardasha + interpret_current_dasha (5-domain impact: career, marriage, health, finance, mind)
+- **Dosha Detection Engine** (`dosha_engine.py`) — Mangal Dosha (Lagna+Moon+Venus refs), Kaal Sarp Dosha (planets one side of Rahu-Ketu axis), Sade Sati (current Saturn transit via real-time swisseph), Shani Dhaiya
+- **D9 Navamsa Engine** (`d9_engine.py`) — deterministic offsets (movable=0/fixed=8/dual=4)
+- **AI Hybrid Layer** (`ai_interpreter.py`) — Claude via Emergent LLM Key, strict prompt: ONLY explains rule output in 2-4 line Hindi/English, no hallucination, response cached in `ai_cache` field
+- **North Indian Kundli SVG** (`NorthIndianChart.js`) — D1 + D9 with planet abbreviations, retrograde marker, Hindi/English labels
+- **Dashboard sections**: "वर्तमान दशा प्रभाव" (Mahadasha + Antardasha + 3 themes + AI व्याख्या + 5 domain pills)
+- **Endpoints**: `/api/dasha/current`, `/api/dasha/interpret`, `/api/dosha/detect`, `/api/dosha/interpret`, `/api/charts/d1-d9`, `/api/insights/today`
+- Extended `/api/kundli/generate` to compute D9 + Dasha + Doshas in one call
+- Pytest suite expanded: 13/13 passing in iteration_4
 
 ## Architecture
 - Backend: FastAPI + MongoDB (this platform)
 - Admin Panel: React.js (this platform)
 - Mobile App: Expo/React Native (user's local VS Code)
-- AI: Claude via Emergent LLM Key (VedaChat + DOCX parsing)
-- Astrology: Swiss Ephemeris (`pyswisseph`) — deterministic, no LLM
-- TTS: Switchable (Google Cloud / OpenAI / ElevenLabs) — configured via Integration Hub
+- AI: Claude via Emergent LLM Key
+  - VedaChat (free-form Q&A)
+  - DOCX parsing
+  - **Astrology Hybrid Interpreter** (rule-bound, 2-4 line, no hallucination)
+- Astrology: Swiss Ephemeris (`pyswisseph`) — deterministic
+- TTS: Switchable (Google / OpenAI / ElevenLabs)
 
-## DB Collections (Astrology)
-- `kundli_data` — user's Kundli (one per admin user, upserted)
-- `graha_scores` — separate per-graha score docs (linked by kundli_id)
-- `daily_recommendations` — top mantras for date+user
-- `mantras` — full Graha → Devta → Mantra mappings (seeded)
-- `notifications` — daily notification log
-- `tts_cache` — base64 audio cache by hash
+## DB Collections
+- `kundli_data` — Full Kundli (planets, scores, d9_chart, dasha_data, current_dasha, dasha_interpretation, doshas, ai_cache, top_recommendations)
+- `graha_scores` — Per-graha scores (linked by kundli_id)
+- `daily_recommendations` — Top mantras for date+user
+- `mantras` — Graha → Devta → Mantra mappings
+- `notifications` — Daily notification log
+- `tts_cache` — Base64 audio cache by hash
 - `integration_settings` — TTS provider + API keys
+
+## API Endpoints (Astrology Suite)
+- `POST /api/kundli/generate` — Full kundli + d9 + dasha + doshas
+- `GET /api/kundli/my` — Saved kundli for current admin
+- `GET /api/dasha/current` — MD/AD + rule interpretation
+- `POST /api/dasha/interpret` — AI Hindi/English (cached)
+- `GET /api/dosha/detect` — Mangal + Kaal Sarp + Sade Sati
+- `POST /api/dosha/interpret` — AI per-dosha (cached)
+- `GET /api/charts/d1-d9` — D1 + D9 SVG-ready data
+- `GET /api/insights/today` — Combined daily insights
+- `GET /api/notifications/today` — Day-based + personalised notifications
+- `POST /api/tts/synthesize` — Switchable provider audio
+- `GET /api/recommendations/mantra` — Top 1-2 mantras
+- `GET /api/mantras/all` — All 9 graha-mantra mappings
 
 ## Backlog
 ### P1
-- [ ] Apply notification scheduler via APScheduler (currently on-demand). Wire mobile push (OneSignal/Expo push) using settings already in Integration Hub
-- [ ] Transit-based alerts (Gochar / Sade Sati) — Swiss Ephemeris current planetary positions
-- [ ] User-level kundli (currently per-admin); needed for mobile app users
-- [ ] User asks Google Cloud TTS service account JSON to enable audio playback
+- [ ] User-level Kundli (currently per-admin) — needed for mobile app
+- [ ] APScheduler + mobile push (OneSignal/Expo) for daily reminders
+- [ ] Dasha-change & Sade-Sati-start event notifications
+- [ ] Google Cloud TTS service account JSON (user must provide)
+- [ ] Pratyantardasha (3rd-level dasha)
 
 ### P2
-- [ ] OpenAI TTS fallback when Google Cloud quota exceeded
-- [ ] Refactor `server.py` (~4900 lines) → `routes/auth_routes.py`, `routes/kundli_routes.py`, `routes/content_routes.py`, etc.
-- [ ] Media Studio (image/video gen) for content
-- [ ] Content data migration scripts
-- [ ] Analytics dashboard enhancements
-- [ ] Server-side bulk write optimisation in /kundli/generate
+- [ ] Refactor `server.py` (~5050 lines) → `routes/` modules
+- [ ] Charts: D7 (Saptamamsa for children), D10 (Dasamsa for career)
+- [ ] Yoga detection (Raj Yoga, Dhana Yoga, Gajakesari Yoga)
+- [ ] Transit-based daily prediction (current planet positions vs natal)
+- [ ] Media Studio (image/video gen)
+- [ ] Server-side bulk write optimisation
 - [ ] Ownership validation in /graha/score
-- [ ] User upload real scripture PDFs at scale
