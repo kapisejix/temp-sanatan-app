@@ -472,7 +472,7 @@ export default function MultilingualEditorPage() {
                         Translating verse {bulkProgress.done}/{bulkProgress.total}
                         {bulkProgress.failed > 0 && <span className="text-red-700 ml-2">· {bulkProgress.failed} failed</span>}
                       </span>
-                      <span>{Math.round((bulkProgress.done / bulkProgress.total) * 100)}%</span>
+                      <span>· {Math.round((bulkProgress.done / bulkProgress.total) * 100)}%</span>
                     </div>
                     <div className="w-full bg-purple-200 rounded-full h-2">
                       <div
