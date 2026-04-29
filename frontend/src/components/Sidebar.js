@@ -6,7 +6,7 @@ import {
   Library, BookMarked, Headphones, MessageCircle, Calendar,
   Users, Shield, Settings, User, LogOut, ChevronLeft, Menu,
   CalendarClock, Star, Image, Sparkles, Plug, BarChart3, ShieldCheck,
-  ScrollText, BookHeart, Scroll, ChevronDown, ChevronRight, Search
+  ScrollText, BookHeart, Scroll, ChevronDown, ChevronRight, Search, Languages
 } from 'lucide-react';
 
 const bhaktiItems = [
@@ -31,6 +31,7 @@ const navItems = [
   { to: '/admin/search', icon: Search, label: 'Smart Search' },
   { to: '/admin/content-manager', icon: FileText, label: 'Content Manager' },
   { to: '/admin/verse-manager', icon: BookOpen, label: 'Verse Manager' },
+  { to: '/admin/multilingual-editor', icon: Languages, label: 'Multilingual Editor' },
   { to: '/admin/daily-scheduler', icon: CalendarClock, label: 'Daily Scheduler' },
   { section: 'bhakti', label: 'Bhakti Categories', icon: BookHeart },
   { to: '/admin/katha-manager', icon: Flame, label: 'Katha Manager' },

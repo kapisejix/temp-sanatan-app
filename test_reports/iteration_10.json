@@ -1,0 +1,42 @@
+{
+  "summary": "Phase 1 Multilingual Editor (Gemini AI translation) — full backend + frontend e2e pass. 11/11 pytest cases green (live Gemini calls, drafts CRUD, publish, auth gating). Frontend e2e on /admin/multilingual-editor verified: item picker loads HC, 5 verses rendered, AI Translate-All generated drafts for mr/gu/ta/te/bn/en (all native scripts rendered correctly in TipTap editors), Save Draft + Publish MR moved meaning into verse_meanings (PUBLISHED badge appeared), source-lang selector (sa/hi/en) works.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/admin/translate/text", "issue": "Intermittent 500 'Budget has been exceeded!' from emergentintegrations during a single AI-translate call mid-test; same key worked seconds later for the bulk Translate-All call. May be a per-call billing/race condition on the EMERGENT_LLM_KEY. Recoverable via retry, but UX surfaces a 500 to admin."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "MultilingualEditorPage / item-select dropdown", "issues": ["React hydration console warning: '<span> cannot be a child of <option>' — likely from an inline icon/element inside <option> markup. Cosmetic but pollutes console."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_translation.py",
+    "/app/test_reports/pytest/iter10_translation.xml"
+  ],
+  "action_items": [
+    "(Optional) Add a frontend retry-on-500 for /admin/translate/* OR show a more actionable 'Gemini budget temporarily exceeded — try again' message instead of raw backend detail.",
+    "(Cosmetic) Fix hydration warning in item <option> by removing nested span/element from option children."
+  ],
+  "critical_code_review_comments": [
+    "translation_service.py: Gemini JSON parsing has a sensible fallback (regex-extract first JSON object) — good resilience.",
+    "Publish endpoint writes both verse_meanings and content_verses.{text,transliteration}_translations.{lang} maps as designed; falls back to granth_verses on ObjectId mismatch — solid.",
+    "Drafts upsert uses (verse_id, language, is_draft=true) compound filter so re-running AI translate updates the existing draft instead of duplicating — correct.",
+    "Auth: every /admin/translate/* endpoint is wrapped with require_role(['super_admin','content_admin']) — verified 401 for unauthenticated calls.",
+    "server.py is now ~5336 lines — should be split into routers/modules; not blocking, but exceeds the 700-line guideline.",
+    "MultilingualEditorPage.js (~475 lines) is acceptable but has multiple useEffect chains; could extract a useDrafts(verseId) hook for clarity."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_translation.py (new)"
+  ],
+  "success_rate": {"backend": "100% (11/11)", "frontend": "100% on the verified flows (item load, verse pick, AI translate-all, multi-script render, save, publish, source-lang switch)"},
+  "test_credentials": "admin@sanatansaathi.com / SanatanAdmin@2026 (super_admin) — read from /app/memory/test_credentials.md",
+  "seed_data_creation": "Live Gemini drafts/published rows created on Hanuman Chalisa (item 69f053c8053b601fc045a5ca) verses CHAUPAI #3,#4,#5 across mr/gu/ta/te/bn/en. CHAUPAI #4 'mr' draft was Saved+Published (PUBLISHED badge confirmed). No TEST_-prefixed cleanup added since this exercises real verse data per problem-statement intent.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Phase 1 multilingual editor passes both backend and UI e2e. If you need to retest publish flow, use a fresh chaupai (e.g. CHAUPAI #2) since #4 is now published in mr. The intermittent 500 'Budget exceeded' came from emergent LLM key; if it surfaces again, just retry — it self-recovers. Note: All Unicode scripts (Devanagari/Gujarati/Tamil/Telugu/Bengali) render correctly in TipTap editor with proper Noto fonts.",
+  "rca of the issue": "Intermittent /translate/text 500 — message 'Budget has been exceeded! Current cost: 1.003, Max budget: 1.001' originates from litellm inside emergentintegrations. Same key worked moments before (pytest) and after (Translate All Languages). Hypothesis: a per-process or per-minute budget envelope on the emergent key gets bumped during high-frequency AI calls and resets quickly. Mitigation: front-end should soft-retry 500s once (~1s back-off) on /admin/translate/text and /admin/translate/verse, and the backend can convert the raised RuntimeError into a 429 with Retry-After hint."
+}

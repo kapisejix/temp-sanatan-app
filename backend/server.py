@@ -5099,6 +5099,211 @@ async def mobile_mantra_of_day():
     }
 
 
+# ===================== AI TRANSLATION (Gemini) — Phase 1 Multilingual Editor =====================
+# All AI output is stored as DRAFT in `verse_translation_drafts` and never auto-published.
+from translation_service import (
+    translate_text as _gemini_translate_text,
+    translate_verse as _gemini_translate_verse,
+    LANGUAGE_NAMES as _SUPPORTED_LANG_NAMES,
+)
+
+class TranslateTextReq(BaseModel):
+    text: str
+    source_language: str = "hi"
+    target_languages: List[str]
+    context_label: Optional[str] = None
+    model: Optional[str] = None
+
+@api_router.post("/admin/translate/text")
+async def admin_translate_text(
+    req: TranslateTextReq,
+    admin: dict = Depends(require_role(["super_admin", "content_admin"]))
+):
+    try:
+        result = await _gemini_translate_text(
+            source_text=req.text,
+            source_language=req.source_language,
+            target_languages=req.target_languages,
+            context_label=req.context_label,
+            model=req.model or "gemini-2.5-flash",
+        )
+        return {"translations": result, "source_language": req.source_language}
+    except Exception as e:
+        logger.exception("Gemini translate_text failed")
+        raise HTTPException(status_code=500, detail=f"Translation failed: {e}")
+
+
+class TranslateVerseReq(BaseModel):
+    source_language: str = "hi"
+    target_languages: List[str]
+    text: Optional[str] = None
+    transliteration: Optional[str] = None
+    meaning: Optional[str] = None
+    verse_id: Optional[str] = None  # if provided, drafts are saved automatically
+    model: Optional[str] = None
+
+@api_router.post("/admin/translate/verse")
+async def admin_translate_verse(
+    req: TranslateVerseReq,
+    admin: dict = Depends(require_role(["super_admin", "content_admin"]))
+):
+    try:
+        result = await _gemini_translate_verse(
+            source_language=req.source_language,
+            target_languages=req.target_languages,
+            text=req.text,
+            transliteration=req.transliteration,
+            meaning=req.meaning,
+            model=req.model or "gemini-2.5-flash",
+        )
+    except Exception as e:
+        logger.exception("Gemini translate_verse failed")
+        raise HTTPException(status_code=500, detail=f"Translation failed: {e}")
+
+    saved_ids = []
+    if req.verse_id:
+        now = datetime.now(timezone.utc).isoformat()
+        for lang_code, fields in result.items():
+            doc = {
+                "verse_id": req.verse_id,
+                "language": lang_code,
+                "text": fields.get("text", ""),
+                "transliteration": fields.get("transliteration", ""),
+                "meaning": fields.get("meaning", ""),
+                "is_ai_generated": True,
+                "is_draft": True,
+                "source_language": req.source_language,
+                "model": req.model or "gemini-2.5-flash",
+                "created_by": admin["_id"],
+                "created_at": now,
+                "updated_at": now,
+            }
+            res = await db.verse_translation_drafts.update_one(
+                {"verse_id": req.verse_id, "language": lang_code, "is_draft": True},
+                {"$set": doc},
+                upsert=True,
+            )
+            saved_ids.append(lang_code)
+
+    return {"translations": result, "saved_drafts": saved_ids}
+
+
+@api_router.get("/admin/translate/drafts/{verse_id}")
+async def admin_get_drafts(
+    verse_id: str,
+    admin: dict = Depends(require_role(["super_admin", "content_admin"]))
+):
+    drafts = await db.verse_translation_drafts.find(
+        {"verse_id": verse_id}
+    ).to_list(50)
+    return [serialize_doc(d) for d in drafts]
+
+
+class DraftUpdateReq(BaseModel):
+    text: Optional[str] = None
+    transliteration: Optional[str] = None
+    meaning: Optional[str] = None
+
+@api_router.put("/admin/translate/drafts/{verse_id}/{language}")
+async def admin_update_draft(
+    verse_id: str,
+    language: str,
+    req: DraftUpdateReq,
+    admin: dict = Depends(require_role(["super_admin", "content_admin"]))
+):
+    if language not in _SUPPORTED_LANG_NAMES:
+        raise HTTPException(status_code=400, detail=f"Unsupported language: {language}")
+    update = {k: v for k, v in req.model_dump().items() if v is not None}
+    update["updated_at"] = datetime.now(timezone.utc).isoformat()
+    update["is_draft"] = True
+    await db.verse_translation_drafts.update_one(
+        {"verse_id": verse_id, "language": language, "is_draft": True},
+        {"$set": {**update, "verse_id": verse_id, "language": language, "is_ai_generated": False}},
+        upsert=True,
+    )
+    doc = await db.verse_translation_drafts.find_one(
+        {"verse_id": verse_id, "language": language, "is_draft": True}
+    )
+    return serialize_doc(doc) if doc else {}
+
+
+@api_router.post("/admin/translate/drafts/{verse_id}/{language}/publish")
+async def admin_publish_draft(
+    verse_id: str,
+    language: str,
+    admin: dict = Depends(require_role(["super_admin", "content_admin"]))
+):
+    """Publish an editable draft into the live `verse_meanings` (meaning) and `content_verses`
+    multilingual fields (text + transliteration). Marks the draft as published."""
+    if language not in _SUPPORTED_LANG_NAMES:
+        raise HTTPException(status_code=400, detail=f"Unsupported language: {language}")
+    draft = await db.verse_translation_drafts.find_one(
+        {"verse_id": verse_id, "language": language, "is_draft": True}
+    )
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Save meaning into verse_meanings (existing schema, per-language)
+    meaning_text = (draft.get("meaning") or "").strip()
+    if meaning_text:
+        existing = await db.verse_meanings.find_one({"verse_id": verse_id, "language": language})
+        if existing:
+            await db.verse_meanings.update_one(
+                {"_id": existing["_id"]},
+                {"$set": {"meaning": meaning_text, "word_breakdown": existing.get("word_breakdown", []), "updated_at": now}},
+            )
+        else:
+            await db.verse_meanings.insert_one({
+                "verse_id": verse_id,
+                "language": language,
+                "meaning": meaning_text,
+                "word_breakdown": [],
+                "created_at": now,
+            })
+
+    # Save text + transliteration into content_verses as multilingual maps (additive)
+    set_doc = {"updated_at": now}
+    text_val = (draft.get("text") or "").strip()
+    trans_val = (draft.get("transliteration") or "").strip()
+    if text_val:
+        set_doc[f"text_translations.{language}"] = text_val
+    if trans_val:
+        set_doc[f"transliteration_translations.{language}"] = trans_val
+    if len(set_doc) > 1:
+        try:
+            await db.content_verses.update_one({"_id": ObjectId(verse_id)}, {"$set": set_doc})
+        except Exception:
+            # Some legacy verse ids might be granth_verses
+            await db.granth_verses.update_one({"_id": ObjectId(verse_id)}, {"$set": set_doc})
+
+    await db.verse_translation_drafts.update_one(
+        {"_id": draft["_id"]},
+        {"$set": {"is_draft": False, "published_at": now, "published_by": admin["_id"]}},
+    )
+    return {"message": f"Published {language}", "verse_id": verse_id, "language": language}
+
+
+@api_router.delete("/admin/translate/drafts/{verse_id}/{language}")
+async def admin_delete_draft(
+    verse_id: str,
+    language: str,
+    admin: dict = Depends(require_role(["super_admin", "content_admin"]))
+):
+    res = await db.verse_translation_drafts.delete_one(
+        {"verse_id": verse_id, "language": language, "is_draft": True}
+    )
+    return {"deleted": res.deleted_count}
+
+
+@api_router.get("/admin/translate/languages")
+async def admin_supported_languages(
+    admin: dict = Depends(require_role(["super_admin", "content_admin"]))
+):
+    return {"languages": [{"code": k, "name": v} for k, v in _SUPPORTED_LANG_NAMES.items()]}
+
+
 # ===================== ROOT =====================
 
 @api_router.get("/")

@@ -8,6 +8,7 @@ import DashboardPage from "./pages/DashboardPage";
 import ContentManagerPage from "./pages/ContentManagerPage";
 import ContentUploadPage from "./pages/ContentUploadPage";
 import VerseManagerPage from "./pages/VerseManagerPage";
+import MultilingualEditorPage from "./pages/MultilingualEditorPage";
 import ArtiManagerPage from "./pages/ArtiManagerPage";
 import KathaManagerPage from "./pages/KathaManagerPage";
 import GranthManagerPage from "./pages/GranthManagerPage";
@@ -90,6 +91,7 @@ function AppRoutes() {
         <Route path="search" element={<SmartSearchPage />} />
         <Route path="content-manager" element={<ContentManagerPage />} />
         <Route path="verse-manager" element={<VerseManagerPage />} />
+        <Route path="multilingual-editor" element={<MultilingualEditorPage />} />
         <Route path="daily-scheduler" element={<DailySchedulerPage />} />
         <Route path="arti-manager" element={<AartiManagerPageNew />} />
         <Route path="chalisa-manager" element={<ChalisaManagerPage />} />
