@@ -43,7 +43,7 @@ Multilingual spiritual platform: React Admin Panel + FastAPI Backend + Expo Mobi
 - GrahaKundliPage backfills d7/d10 from `/charts/d1-d9` for legacy kundli docs that pre-date this session.
 - **iteration_11.json**: 14/14 backend pytest pass, frontend e2e on 4-chart render + bulk translate + progress bar + button-disable regression.
 
-### Session 11: Mobile-first Kundli refactor + Chart no-overlap engine (Feb 2026 — current)
+### Session 11: Mobile-first Kundli refactor + Chart no-overlap engine (Feb 2026)
 - **Removed Grah & Kundli from Admin Panel** (route + sidebar entry). Backend kundli APIs remain intact for mobile consumption.
 - **New shared layout module** `/app/frontend/src/lib/kundliLayout.js` (also copied to `/app/expo-app/src/lib/`): pure-JS BBox-based layout engine with no-overlap guarantees:
   - 1-2 planets → centered row; 3-4 → vertical stack; 5+ → 2-col grid
@@ -55,6 +55,18 @@ Multilingual spiritual platform: React Admin Panel + FastAPI Backend + Expo Mobi
 - **Mobile KundliScreen** rewritten — Form (Name/DOB/TOB/POB) + 4-tab layout: Charts (D1↔D9↔D7↔D10 chip switcher + planet table), Overview, Analysis, Remedies
 - **Deferred to Phase 2** (per user request): zoom/pan/tap-bottomsheet, animated planet transitions
 - **iteration_12.json**: 5/5 backend regression + 48/48 layout-engine unit tests + admin route removal verified.
+
+### Session 12: Phase 2 — Audio-Text Sync + Mobile Beginner Mode (Feb 2026 — current)
+- **Backend `/app/backend/audio_sync_service.py`** — LRC + JSON sync-map parser with sort + end_ms backfill from next start_ms.
+- **3 new endpoints** under `/api/content/items/{item_id}/audio`:
+  - `POST` — multipart (audio + sync_file + duration_ms), saves to `/app/backend/static/audio/items/{id}.{ext}`, persists `audio_sync` doc with sync_map + audio_url. Includes 25 MB safety guard, audio extension whitelist (mp3/m4a/wav/ogg/aac).
+  - `GET` (PUBLIC) — returns audio_url + sync_map for mobile consumption.
+  - `DELETE` — admin-only, clears file + db field.
+- **Static mount** `/api/audio-static` serves uploaded audio files.
+- **Admin page** `/admin/audio-sync` (`AudioSyncManagerPage.js`) — item picker → current audio panel (audio preview + sync table) + replace/upload form with LRC/JSON examples and remove button.
+- **Mobile `ContentDetailScreen.js` rewrite** — fetches `/content/items/{id}/audio`; if synced audio exists plays real MP3 with verse-by-verse highlighting on `positionMillis`; falls back to TTS for items without sync. Verses rendered as numbered cards that scale + highlight when active.
+- **Mobile Beginner Mode** (🎓 शिक्षण मोड) — for synced items, plays each verse via Google Cloud TTS 3 times with 1.2s pauses, then advances. Banner shows current verse + Stop button.
+- **iteration_13.json**: 24/24 backend pytest pass + frontend admin flow green.
 
 ### Session 8: Mobile Navigation Overhaul + Intent-Based Bhakti (Feb 2026)
 - **Per-tab Stack architecture** in App.js — fixes "inner links don't work":
@@ -103,9 +115,9 @@ Multilingual spiritual platform: React Admin Panel + FastAPI Backend + Expo Mobi
 
 ## Backlog
 ### P1 (next phases of multilingual upgrade)
-- [ ] **Phase 2: Audio-Text Synchronization** — Admin upload MP3 + LRC/JSON sync file; Mobile player highlights current verse synced with audio playback
-- [ ] **Phase 2: Mobile Beginner Mode** — Guided learning flow, Guru/Student voice looping using Google Cloud TTS
-- [ ] **Phase 2: Mobile Expert Mode** — Consumption + Reel/Video generation flow
+- [ ] **Mobile Expert Mode** — Consumption + Reel/Video generation flow (deferred from Phase 2 per user request)
+- [ ] Zoom/pan + tap-bottomsheet on Mobile Kundli charts (deferred from Phase 1)
+- [ ] Animated planet transitions between D1↔D9↔D7↔D10 (deferred from Phase 1)
 
 ### P2
 - [ ] User signup/login screen on mobile (currently auto-admin)

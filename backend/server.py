@@ -5362,9 +5362,20 @@ async def upload_item_audio(
     if ext not in {"mp3", "m4a", "wav", "ogg", "aac"}:
         raise HTTPException(status_code=400, detail=f"Unsupported audio format: .{ext}")
     target_path = AUDIO_STATIC_DIR / f"{item_id}.{ext}"
-    # Save file bytes
+    # Save file bytes (with a 25MB safety cap to prevent disk exhaustion)
+    MAX_AUDIO_BYTES = 25 * 1024 * 1024
+    written = 0
     with target_path.open("wb") as f:
-        shutil.copyfileobj(audio.file, f)
+        while True:
+            chunk = await audio.read(1024 * 64)
+            if not chunk:
+                break
+            written += len(chunk)
+            if written > MAX_AUDIO_BYTES:
+                f.close()
+                target_path.unlink(missing_ok=True)
+                raise HTTPException(status_code=413, detail="Audio file too large (max 25 MB)")
+            f.write(chunk)
 
     # Parse sync file if provided
     sync_map: List[Dict[str, Any]] = []
