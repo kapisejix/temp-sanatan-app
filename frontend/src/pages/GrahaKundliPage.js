@@ -139,11 +139,24 @@ export default function GrahaKundliPage() {
             graha_scores: data.graha_scores,
             recommendations: data.top_recommendations,
             d9_chart: data.d9_chart,
+            d7_chart: data.d7_chart,
+            d10_chart: data.d10_chart,
             current_dasha: data.current_dasha,
             dasha_interpretation: data.dasha_interpretation,
             doshas: data.doshas,
             kundli_id: String(data._id || ''),
           });
+          // Backfill D7/D10 from /charts/d1-d9 if older kundli docs don't have them yet
+          if ((!data.d7_chart || !data.d10_chart) && data.ascendant) {
+            try {
+              const { data: charts } = await api.get('/charts/d1-d9');
+              setResult((prev) => prev ? {
+                ...prev,
+                d7_chart: prev.d7_chart || charts.d7,
+                d10_chart: prev.d10_chart || charts.d10,
+              } : prev);
+            } catch (e) { /* ignore */ }
+          }
           setForm({
             name: data.name || '',
             gender: data.gender || 'Male',
@@ -285,13 +298,16 @@ export default function GrahaKundliPage() {
           {/* Dosha Panel */}
           <DoshaPanel language={lang} key={`dosha-${lang}-${result?.kundli_id || 'k'}`} />
 
-          {/* Charts D1 + D9 */}
+          {/* Charts D1 + D9 + D7 + D10 */}
           {(result.d9_chart || result.ascendant) && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-fade-in">
               {result.ascendant && (
                 <NorthIndianChart
                   ascendantRashiIdx={Math.floor(result.ascendant.degree / 30)}
-                  planets={(result.planets || []).map(p => ({ graha: p.graha, rashi_idx: p.rashi_idx, is_retrograde: p.is_retrograde }))}
+                  planets={(result.planets || []).map(p => ({
+                    graha: p.graha, rashi_idx: p.rashi_idx, is_retrograde: p.is_retrograde,
+                    degree_in_sign: typeof p.degree === 'number' ? p.degree - Math.floor(p.degree / 30) * 30 : undefined,
+                  }))}
                   title={lang === 'hi' ? 'लग्न कुंडली (D1)' : 'Lagna Kundli (D1)'}
                   language={lang}
                 />
@@ -301,6 +317,22 @@ export default function GrahaKundliPage() {
                   ascendantRashiIdx={result.d9_chart.ascendant.rashi_idx}
                   planets={result.d9_chart.planets}
                   title={lang === 'hi' ? 'नवांश कुंडली (D9)' : 'Navamsa Kundli (D9)'}
+                  language={lang}
+                />
+              )}
+              {result.d7_chart && (
+                <NorthIndianChart
+                  ascendantRashiIdx={result.d7_chart.ascendant.rashi_idx}
+                  planets={result.d7_chart.planets}
+                  title={lang === 'hi' ? 'सप्तमांश कुंडली (D7)' : 'Saptamsa Kundli (D7)'}
+                  language={lang}
+                />
+              )}
+              {result.d10_chart && (
+                <NorthIndianChart
+                  ascendantRashiIdx={result.d10_chart.ascendant.rashi_idx}
+                  planets={result.d10_chart.planets}
+                  title={lang === 'hi' ? 'दशमांश कुंडली (D10)' : 'Dasamsa Kundli (D10)'}
                   language={lang}
                 />
               )}

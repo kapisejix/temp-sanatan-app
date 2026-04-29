@@ -44,6 +44,8 @@ def build_navamsa_chart(planets, asc_longitude):
             "rashi": RASHIS[d9_idx],
             "rashi_hi": RASHIS_HI[d9_idx],
             "house": d9_house,
+            "degree_in_sign": p["degree"] - int(p["degree"] / 30.0) * 30.0,
+            "is_retrograde": p.get("is_retrograde", False),
         })
     return {
         "ascendant": {"rashi_idx": d9_asc, "rashi": RASHIS[d9_asc], "rashi_hi": RASHIS_HI[d9_asc]},

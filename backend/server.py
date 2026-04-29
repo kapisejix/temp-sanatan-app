@@ -4521,6 +4521,11 @@ async def create_kundli(request: Request, admin: dict = Depends(get_current_admi
     # Compute D9 (Navamsa) chart
     asc_lon = kundli["ascendant"]["degree"]
     d9_chart = build_navamsa_chart(kundli["planets"], asc_lon)
+    # Compute D7 (Saptamsa) and D10 (Dasamsa) charts
+    from d7_engine import build_saptamsa_chart
+    from d10_engine import build_dasamsa_chart
+    d7_chart = build_saptamsa_chart(kundli["planets"], asc_lon)
+    d10_chart = build_dasamsa_chart(kundli["planets"], asc_lon)
 
     # Compute Vimshottari Dasha (use Moon longitude)
     moon_planet = next((p for p in kundli["planets"] if p["graha"] == "Moon"), None)
@@ -4632,6 +4637,8 @@ async def create_kundli(request: Request, admin: dict = Depends(get_current_admi
         "graha_scores": scores,
         "recommendations": recommendations,
         "d9_chart": d9_chart,
+        "d7_chart": d7_chart,
+        "d10_chart": d10_chart,
         "current_dasha": current_dasha,
         "dasha_interpretation": dasha_interpretation,
         "doshas": doshas,
@@ -4998,7 +5005,10 @@ async def api_dosha_interpret_ai(request: Request, admin: dict = Depends(get_cur
 
 @api_router.get("/charts/d1-d9")
 async def api_charts(admin: dict = Depends(get_current_admin)):
-    """Return D1 (Lagna) + D9 (Navamsa) chart data for SVG rendering."""
+    """Return D1 (Lagna) + D9 (Navamsa) + D7 (Saptamsa) + D10 (Dasamsa) chart data for SVG rendering."""
+    from d7_engine import build_saptamsa_chart
+    from d10_engine import build_dasamsa_chart
+
     kundli = await _load_user_kundli(admin["_id"])
     if not kundli:
         raise HTTPException(status_code=404, detail="No Kundli found")
@@ -5012,11 +5022,20 @@ async def api_charts(admin: dict = Depends(get_current_admin)):
             "graha": p["graha"], "graha_hi": p["graha_hi"],
             "rashi_idx": p["rashi_idx"], "rashi": p["rashi"], "rashi_hi": p["rashi_hi"],
             "house": p["house"], "is_retrograde": p["is_retrograde"],
+            "degree_in_sign": p.get("degree", 0) - int(p.get("degree", 0) / 30.0) * 30.0,
         } for p in kundli["planets"]],
     }
 
     d9 = kundli.get("d9_chart") or build_navamsa_chart(kundli["planets"], asc_lon)
-    return {"d1": d1, "d9": d9}
+    d7 = build_saptamsa_chart(kundli["planets"], asc_lon)
+    d10 = build_dasamsa_chart(kundli["planets"], asc_lon)
+    return {"d1": d1, "d9": d9, "d7": d7, "d10": d10}
+
+
+@api_router.get("/charts/all")
+async def api_charts_all(admin: dict = Depends(get_current_admin)):
+    """Alias of /charts/d1-d9 returning all available divisional charts."""
+    return await api_charts(admin)
 
 
 @api_router.get("/insights/today")

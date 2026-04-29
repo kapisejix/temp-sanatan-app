@@ -33,6 +33,7 @@ export default function MultilingualEditorPage() {
   const [loadingItems, setLoadingItems] = useState(true);
   const [loadingVerses, setLoadingVerses] = useState(false);
   const [translating, setTranslating] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState(null); // { done, total, failed }
   const [saving, setSaving] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [statusMsg, setStatusMsg] = useState(null);
@@ -220,6 +221,88 @@ export default function MultilingualEditorPage() {
     }
   };
 
+  // ---- One-click: translate ALL verses of the item into ALL target languages ----
+  const handleTranslateWholeItem = async () => {
+    if (!verses.length) return;
+    if (!window.confirm(
+      `Translate all ${verses.length} verses into ${TARGET_LANGUAGES_PHASE1.length} languages?\n\n` +
+      `This will take ~${Math.round(verses.length * 6 / 60 * 1.2)} minute(s) and use Gemini AI.\n\n` +
+      `All output is saved as DRAFT — nothing is auto-published.`
+    )) return;
+
+    setError(null);
+    setStatusMsg(null);
+    setBulkProgress({ done: 0, total: verses.length, failed: 0 });
+    const targets = TARGET_LANGUAGES_PHASE1.map((l) => l.code).filter((c) => c !== sourceLang);
+    let failed = 0;
+
+    for (let i = 0; i < verses.length; i++) {
+      const v = verses[i];
+      // Fetch source meaning for this verse in source language (best effort)
+      let vMeaning = '';
+      try {
+        const { data: ms } = await api.get(`/content/verses/${v._id}/meanings`);
+        vMeaning = (ms || []).find((m) => m.language === sourceLang)?.meaning || '';
+      } catch { /* non-fatal */ }
+
+      const vText = sourceLang === 'sa'
+        ? (v.sanskrit_text || '')
+        : (v.text_translations?.[sourceLang] || v.sanskrit_text || '');
+      const vTrans = v.transliteration || '';
+
+      if (!vText && !vTrans && !vMeaning) {
+        // Nothing to translate; mark this verse as done and continue
+        setBulkProgress((p) => ({ ...p, done: (p?.done || 0) + 1 }));
+        continue;
+      }
+
+      let success = false;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          await api.post('/admin/translate/verse', {
+            source_language: sourceLang,
+            target_languages: targets,
+            text: vText,
+            transliteration: vTrans,
+            meaning: vMeaning,
+            verse_id: v._id,
+          });
+          success = true;
+          break;
+        } catch (e) {
+          const detail = e?.response?.data?.detail || '';
+          if (attempt === 0 && /budget|exceeded|429/i.test(detail)) {
+            await new Promise((r) => setTimeout(r, 1500));
+            continue;
+          }
+          break;
+        }
+      }
+      if (!success) failed += 1;
+      setBulkProgress({ done: i + 1, total: verses.length, failed });
+
+      // Tiny pacing between calls to be gentle on the LLM key
+      if (i < verses.length - 1) await new Promise((r) => setTimeout(r, 250));
+    }
+
+    // Refresh drafts for the currently-active verse
+    if (activeVerseId) {
+      try {
+        const { data: drf } = await api.get(`/admin/translate/drafts/${activeVerseId}`);
+        const map = {};
+        (drf || []).forEach((d) => { map[d.language] = d; });
+        setDrafts(map);
+      } catch { /* ignore */ }
+    }
+
+    setBulkProgress(null);
+    if (failed === 0) {
+      setStatusMsg(`✓ Translated all ${verses.length} verses into ${targets.length} languages. Review drafts before publishing.`);
+    } else {
+      setError(`Translated ${verses.length - failed}/${verses.length} verses. ${failed} failed — retry the missing ones individually.`);
+    }
+  };
+
   const updateField = (field, val) => {
     setDrafts((prev) => ({
       ...prev,
@@ -353,7 +436,7 @@ export default function MultilingualEditorPage() {
                 <div className="flex flex-wrap gap-2">
                   <button
                     onClick={() => handleAITranslate(false)}
-                    disabled={translating}
+                    disabled={translating || !!bulkProgress}
                     className="bg-[#E95A34] text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-[#d24e2c] disabled:opacity-50 flex items-center gap-2"
                     data-testid="multi-ai-translate-current"
                   >
@@ -362,13 +445,43 @@ export default function MultilingualEditorPage() {
                   </button>
                   <button
                     onClick={() => handleAITranslate(true)}
-                    disabled={translating}
+                    disabled={translating || !!bulkProgress}
                     className="bg-[#7B3F61] text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-[#62304d] disabled:opacity-50 flex items-center gap-2"
                     data-testid="multi-ai-translate-all"
                   >
                     <Wand2 size={14} /> Translate All Languages
                   </button>
+                  <button
+                    onClick={handleTranslateWholeItem}
+                    disabled={translating || !!bulkProgress || !verses.length}
+                    className="bg-gradient-to-r from-[#E95A34] to-[#7B3F61] text-white px-4 py-2 rounded-lg text-sm font-semibold hover:opacity-90 disabled:opacity-50 flex items-center gap-2 shadow-sm"
+                    data-testid="multi-ai-translate-whole-item"
+                  >
+                    <Sparkles size={14} /> AI Translate Whole Item
+                    <span className="bg-white/20 rounded-full px-2 py-0.5 text-[10px] font-semibold">
+                      {verses.length} verses × {TARGET_LANGUAGES_PHASE1.filter((l) => l.code !== sourceLang).length} langs
+                    </span>
+                  </button>
                 </div>
+
+                {bulkProgress && (
+                  <div className="bg-purple-50 border border-purple-200 rounded-lg px-4 py-3" data-testid="multi-bulk-progress">
+                    <div className="flex items-center justify-between text-xs font-semibold text-purple-900 mb-2">
+                      <span className="flex items-center gap-2">
+                        <Loader2 size={14} className="animate-spin" />
+                        Translating verse {bulkProgress.done}/{bulkProgress.total}
+                        {bulkProgress.failed > 0 && <span className="text-red-700 ml-2">· {bulkProgress.failed} failed</span>}
+                      </span>
+                      <span>{Math.round((bulkProgress.done / bulkProgress.total) * 100)}%</span>
+                    </div>
+                    <div className="w-full bg-purple-200 rounded-full h-2">
+                      <div
+                        className="bg-gradient-to-r from-[#E95A34] to-[#7B3F61] h-2 rounded-full transition-all duration-300"
+                        style={{ width: `${(bulkProgress.done / bulkProgress.total) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
 
                 {/* Language tabs */}
                 <div className="border-b border-gray-200 flex flex-wrap gap-1">

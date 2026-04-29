@@ -1,150 +1,205 @@
 import React from 'react';
 
 /**
- * North Indian Kundli Chart (D1 / D9) — SVG diamond layout.
- * Houses are fixed positions; rashis rotate based on Ascendant.
+ * North Indian Kundli Chart — classic SVG diamond layout.
  *
- * Standard North Indian layout:
- *   +-----+-----+
- *   | H12 | H1  |  (top row, with House 1 = Lagna, top-centre)
- *   +-----+-----+
- *   ...houses arranged in 12 triangular/diamond cells.
+ * Conventions matched against reference image:
+ *  - Each of 12 fixed house cells displays the RASHI NUMBER (1=Aries..12=Pisces)
+ *    at the cell's inner vertex (closest to chart centre).
+ *  - Graha abbreviations are shown with degree-in-sign as a superscript
+ *    (e.g. शु¹⁵, के⁰², गु⁰³).
+ *  - Each graha gets a distinct colour for at-a-glance reading.
+ *  - Retrograde planets get a "(व)" suffix and a warm tone.
  *
- * We use a 4×4 grid with House 1 at top-centre, going anti-clockwise:
- * H1 = top-centre (Lagna), H2 = top-left, H3 = mid-left-upper,
- * H4 = mid-left, H5 = mid-left-lower, H6 = bottom-left,
- * H7 = bottom-centre, H8 = bottom-right, H9 = mid-right-lower,
- * H10 = mid-right, H11 = mid-right-upper, H12 = top-right.
+ * Standard 12-cell layout (400×400 viewBox):
+ *   Outer rect 0,0,400,400. Inner diamond (200,0)-(400,200)-(200,400)-(0,200).
+ *   Diagonals (0,0)-(400,400) and (0,400)-(400,0) carve 12 cells.
+ *
+ * Used for D1 (Lagna), D9 (Navamsa), D7 (Saptamsa), D10 (Dasamsa).
  */
 
-// 12 cell layouts as polygon points in 400×400 viewbox.
-// Outer square 0,0,400,400. Inner diamond corners at (200,0),(400,200),(200,400),(0,200).
-// Inner cross from corner-to-corner: lines (0,0)-(400,400) and (0,400)-(400,0).
-const HOUSE_POLYGONS = [
-  // House 1 (top-centre triangle): apex at top-centre, base is upper inner diamond
-  '200,0 100,100 300,100',
-  // House 2 (upper-left small triangle)
-  '0,0 200,0 100,100',
-  // House 3 (left-upper diamond cell)
-  '0,0 100,100 0,200',
-  // House 4 (mid-left rhombus)
-  '0,200 100,100 200,200 100,300',
-  // House 5 (left-lower triangle)
-  '0,200 100,300 0,400',
-  // House 6 (lower-left small triangle)
-  '0,400 100,300 200,400',
-  // House 7 (bottom-centre triangle)
-  '200,400 100,300 300,300',
-  // House 8 (lower-right small triangle)
-  '200,400 300,300 400,400',
-  // House 9 (right-lower triangle)
-  '400,400 300,300 400,200',
-  // House 10 (mid-right rhombus)
-  '400,200 300,300 200,200 300,100',
-  // House 11 (right-upper triangle)
-  '400,200 300,100 400,0',
-  // House 12 (upper-right small triangle)
-  '400,0 300,100 200,0',
+// Rashi-number anchor points (where the rashi number is rendered for each house).
+// Position is the inner vertex / inner corner of each cell, closest to centre.
+const RASHI_NUM_POSITIONS = [
+  // [x, y] for house index 0..11 (House 1..House 12)
+  [200, 115], // H1 — top-centre triangle, anchored just below its base (toward centre)
+  [115, 90],  // H2 — upper-left small triangle, near inner corner (100,100)
+  [80, 130],  // H3 — left-upper triangle, near (100,100) on left side
+  [180, 215], // H4 — mid-left rhombus, near centre vertex (200,200)
+  [80, 270],  // H5 — left-lower triangle, near (100,300)
+  [115, 312], // H6 — bottom-left small triangle, near (100,300) below
+  [200, 290], // H7 — bottom-centre triangle, anchored just above its base (toward centre)
+  [285, 312], // H8 — bottom-right small triangle, near (300,300)
+  [320, 270], // H9 — right-lower triangle, near (300,300) on right
+  [220, 215], // H10 — mid-right rhombus, near centre vertex (200,200)
+  [320, 130], // H11 — right-upper triangle, near (300,100)
+  [285, 90],  // H12 — upper-right small triangle, near (300,100) above
 ];
 
-// Approximate text-anchor centres for each house (x,y)
-const HOUSE_CENTRES = [
-  [200, 65],   // 1
-  [110, 45],   // 2
-  [50, 110],   // 3
-  [110, 200],  // 4
-  [50, 290],   // 5
-  [110, 360],  // 6
-  [200, 340],  // 7
-  [290, 360],  // 8
-  [350, 290],  // 9
-  [290, 200],  // 10
-  [350, 110],  // 11
-  [290, 45],   // 12
+// Graha-cluster centres for each house (used as the anchor for stacking planets)
+const GRAHA_ANCHORS = [
+  [200, 60],   // H1 — middle of top triangle
+  [110, 40],   // H2
+  [40, 110],   // H3
+  [110, 200],  // H4 (rhombus centre, slightly left of centre)
+  [40, 290],   // H5
+  [110, 360],  // H6
+  [200, 350],  // H7
+  [290, 360],  // H8
+  [360, 290],  // H9
+  [290, 200],  // H10
+  [360, 110],  // H11
+  [290, 40],   // H12
 ];
 
-const RASHI_HI_SHORT = ["मेष", "वृष", "मिथुन", "कर्क", "सिंह", "कन्या",
-                         "तुला", "वृश्चिक", "धनु", "मकर", "कुम्भ", "मीन"];
+const GRAHA_HI = {
+  Sun: 'सू', Moon: 'चं', Mars: 'मं', Mercury: 'बु',
+  Jupiter: 'गु', Venus: 'शु', Saturn: 'श', Rahu: 'रा', Ketu: 'के',
+};
+const GRAHA_EN = {
+  Sun: 'Su', Moon: 'Mo', Mars: 'Ma', Mercury: 'Me',
+  Jupiter: 'Ju', Venus: 'Ve', Saturn: 'Sa', Rahu: 'Ra', Ketu: 'Ke',
+};
+const GRAHA_COLOR = {
+  Sun: '#D63031',       // red
+  Moon: '#74B9FF',      // sky blue
+  Mars: '#0A6E2D',      // dark green
+  Mercury: '#1E40AF',   // navy
+  Jupiter: '#7B3F61',   // plum
+  Venus: '#0A6E2D',     // green
+  Saturn: '#B45309',    // amber
+  Rahu: '#7C2D12',      // dark red-brown
+  Ketu: '#A16207',      // gold
+};
 
-const GRAHA_HI_SHORT = {
-  Sun: "सूर्य", Moon: "चंद्र", Mars: "मंगल", Mercury: "बुध",
-  Jupiter: "गुरु", Venus: "शुक्र", Saturn: "शनि", Rahu: "राहु", Ketu: "केतु",
-};
-const GRAHA_EN_SHORT = {
-  Sun: "Su", Moon: "Mo", Mars: "Ma", Mercury: "Me",
-  Jupiter: "Ju", Venus: "Ve", Saturn: "Sa", Rahu: "Ra", Ketu: "Ke",
-};
+// Colour palette for rashi numbers — alternating per house index for visual rhythm
+const RASHI_NUM_COLORS = [
+  '#1E40AF', '#7B3F61', '#0A6E2D', '#B91C1C',
+  '#0A6E2D', '#B45309', '#B91C1C', '#7B3F61',
+  '#1E40AF', '#7B3F61', '#7C2D12', '#0A6E2D',
+];
+
+const GRAHA_HOUSE_FROM_RASHI = (rashi_idx, asc_idx) => ((rashi_idx - asc_idx + 12) % 12) + 1;
 
 export default function NorthIndianChart({
   ascendantRashiIdx,
-  planets,        // [{graha, rashi_idx, is_retrograde?}]
-  title = "Lagna Kundli (D1)",
-  language = "hi",
+  planets,            // [{graha, rashi_idx, is_retrograde?, degree_in_sign?}]
+  title = 'Lagna Kundli (D1)',
+  language = 'hi',
   size = 400,
+  showLagnaMarker = true,
 }) {
-  // For each house (1..12), the rashi index = (asc + house - 1) % 12
+  // Group planets by house index (0..11)
   const housesPlanets = Array.from({ length: 12 }, () => []);
-  (planets || []).forEach(p => {
-    // House where planet sits
-    const house = ((p.rashi_idx - ascendantRashiIdx + 12) % 12) + 1;
-    housesPlanets[house - 1].push(p);
+  (planets || []).forEach((p) => {
+    const houseNum = GRAHA_HOUSE_FROM_RASHI(p.rashi_idx, ascendantRashiIdx);
+    housesPlanets[houseNum - 1].push(p);
   });
 
   return (
-    <div className="bg-white rounded-xl border border-[#E8E4E1] p-4" data-testid={`kundli-chart-${title.toLowerCase().replace(/\s+/g,'-')}`}>
-      <h4 className="text-sm font-bold tracking-tight mb-3 text-center" style={{ fontFamily: 'Manrope' }}>{title}</h4>
+    <div
+      className="bg-white rounded-xl border border-[#E8E4E1] p-4"
+      data-testid={`kundli-chart-${title.toLowerCase().replace(/\s+/g, '-')}`}
+    >
+      <h4 className="text-sm font-bold tracking-tight mb-3 text-center" style={{ fontFamily: 'Manrope' }}>
+        {title}
+      </h4>
       <svg viewBox="0 0 400 400" width={size} height={size} className="mx-auto" style={{ maxWidth: '100%' }}>
         {/* Outer square */}
         <rect x="0" y="0" width="400" height="400" fill="none" stroke="#E95A34" strokeWidth="2" />
-        {/* Diamonds */}
-        <line x1="0" y1="0" x2="400" y2="400" stroke="#E95A34" strokeWidth="1.5" />
-        <line x1="400" y1="0" x2="0" y2="400" stroke="#E95A34" strokeWidth="1.5" />
-        <polygon points="200,0 400,200 200,400 0,200" fill="none" stroke="#E95A34" strokeWidth="1.5" />
+        {/* Diagonals */}
+        <line x1="0" y1="0" x2="400" y2="400" stroke="#E95A34" strokeWidth="1.4" />
+        <line x1="400" y1="0" x2="0" y2="400" stroke="#E95A34" strokeWidth="1.4" />
+        {/* Inner diamond */}
+        <polygon points="200,0 400,200 200,400 0,200" fill="none" stroke="#E95A34" strokeWidth="1.4" />
 
-        {/* House polygons (transparent for hit testing only) */}
-        {HOUSE_POLYGONS.map((pts, i) => (
-          <polygon key={i} points={pts} fill="transparent" />
-        ))}
-
-        {/* House numbers + rashi short label */}
-        {HOUSE_CENTRES.map(([cx, cy], i) => {
+        {/* Rashi numbers at inner vertices of each house */}
+        {RASHI_NUM_POSITIONS.map(([x, y], i) => {
           const houseNum = i + 1;
           const rashiIdx = (ascendantRashiIdx + i) % 12;
+          const rashiNum = rashiIdx + 1; // 1..12
           return (
-            <g key={`h-${i}`}>
-              <text x={cx} y={cy} fontSize="9" fill="#7A8690" textAnchor="middle">
-                {houseNum} · {RASHI_HI_SHORT[rashiIdx]}
-              </text>
-            </g>
+            <text
+              key={`rn-${i}`}
+              x={x}
+              y={y}
+              fontSize="14"
+              fontWeight="700"
+              fill={RASHI_NUM_COLORS[i]}
+              textAnchor="middle"
+              data-testid={`chart-house-${houseNum}-rashi`}
+            >
+              {rashiNum}
+            </text>
           );
         })}
 
-        {/* Planets */}
-        {HOUSE_CENTRES.map(([cx, cy], i) => {
+        {/* Graha labels — stacked per house */}
+        {GRAHA_ANCHORS.map(([cx, cy], i) => {
           const planetsInHouse = housesPlanets[i];
+          if (!planetsInHouse.length) return null;
+
+          // Stack horizontally if 2-3 planets, vertically beyond that.
+          // For up to 3 planets in a triangular cell we stack horizontally;
+          // for 4+ we wrap to a 2nd row.
           return planetsInHouse.map((p, pi) => {
-            const yOffset = 14 + pi * 12;
-            const label = language === 'hi' ? GRAHA_HI_SHORT[p.graha] || p.graha : GRAHA_EN_SHORT[p.graha] || p.graha;
+            const perRow = planetsInHouse.length > 3 ? Math.ceil(planetsInHouse.length / 2) : planetsInHouse.length;
+            const row = Math.floor(pi / perRow);
+            const col = pi % perRow;
+            const totalCols = Math.min(perRow, planetsInHouse.length - row * perRow);
+            const xSpacing = 22;
+            const xOffset = (col - (totalCols - 1) / 2) * xSpacing;
+            const yOffset = row * 16;
+            const label = language === 'hi' ? (GRAHA_HI[p.graha] || p.graha) : (GRAHA_EN[p.graha] || p.graha);
+            const color = p.is_retrograde ? '#92400E' : (GRAHA_COLOR[p.graha] || '#E95A34');
+            const deg = typeof p.degree_in_sign === 'number'
+              ? String(Math.floor(p.degree_in_sign)).padStart(2, '0')
+              : null;
             return (
-              <text
-                key={`p-${i}-${pi}`}
-                x={cx}
-                y={cy + yOffset}
-                fontSize="11"
-                fontWeight="700"
-                fill={p.is_retrograde ? "#92400E" : "#E95A34"}
-                textAnchor="middle"
-              >
-                {label}{p.is_retrograde ? '(व)' : ''}
-              </text>
+              <g key={`p-${i}-${pi}`}>
+                <text
+                  x={cx + xOffset}
+                  y={cy + yOffset}
+                  fontSize="14"
+                  fontWeight="700"
+                  fill={color}
+                  textAnchor="middle"
+                  data-testid={`chart-graha-${i + 1}-${p.graha}`}
+                >
+                  {label}
+                  {p.is_retrograde && <tspan fontSize="9" dx="1">(व)</tspan>}
+                </text>
+                {deg !== null && (
+                  <text
+                    x={cx + xOffset + 9}
+                    y={cy + yOffset - 5}
+                    fontSize="8"
+                    fontWeight="600"
+                    fill={color}
+                    textAnchor="start"
+                  >
+                    {deg}
+                  </text>
+                )}
+              </g>
             );
           });
         })}
 
-        {/* Ascendant marker on house 1 */}
-        <text x="200" y="90" fontSize="10" fontWeight="700" fill="#991B1B" textAnchor="middle">
-          {language === 'hi' ? 'लग्न' : 'Asc'}
-        </text>
+        {/* Lagna marker on House 1 */}
+        {showLagnaMarker && (
+          <text
+            x="200"
+            y="38"
+            fontSize="10"
+            fontWeight="700"
+            fill="#991B1B"
+            textAnchor="middle"
+            data-testid="chart-lagna-marker"
+          >
+            {language === 'hi' ? 'लग्न' : 'Asc'}
+          </text>
+        )}
       </svg>
     </div>
   );

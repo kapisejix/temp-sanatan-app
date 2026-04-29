@@ -1,0 +1,39 @@
+{
+  "summary": "Iteration 11 — D7/D10 charts + One-click Translate Whole Item. Backend: 14/14 pytest pass (D7/D10 algorithm correctness, /api/kundli/generate returns d7_chart & d10_chart, /api/charts/d1-d9 returns all 4 charts with required keys, auth gating). Frontend: GrahaKundli renders all 4 charts (D1/D9/D7/D10) with 48 rashi-corner labels and Hindi graha abbreviations; Multilingual Editor 'AI Translate Whole Item' click → confirm dialog → progress bar (multi-bulk-progress) → progressed through all 5 verses of Hanuman Chalisa → drafts persisted for mr/gu/ta/te/bn/en (verified via GET /admin/translate/drafts/{verse_id}). Other AI buttons correctly disabled during bulk run.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "MultilingualEditorPage / item-select dropdown", "issues": ["Pre-existing hydration warning in console: '<span> cannot be a child of <option>' (carry-over from iter10, cosmetic only)"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_d7_d10_charts.py",
+    "/app/test_reports/pytest/iter11_d7_d10.xml"
+  ],
+  "action_items": [
+    "(Cosmetic, optional) Strip nested <span> from item <option> labels in MultilingualEditorPage to silence React hydration warning.",
+    "(Cosmetic, optional) Progress bar text '0/50%' / '4/580%' renders without a space between done/total and percentage — e.g. 'Translating verse 4/5 80%'. Consider adding a separator (e.g. '· ') to improve readability."
+  ],
+  "critical_code_review_comments": [
+    "d7_engine.py / d10_engine.py: clean, deterministic, well-commented; uses Parashara classical rules (odd/even sign offsets 6 / 8). No floating-point edge issues observed.",
+    "server.py /api/charts/d1-d9: D1 returns planet `house` from stored kundli (computed at generation time), but ascendant rashi_idx is recomputed via int(asc_lon/30). For divisional charts D7/D9/D10 both are recomputed together, so ((rashi_idx - asc_idx)%12)+1 == house. For D1 a small off-by-one between stored house and recomputed asc binning is possible at sign boundaries — not a bug but worth a comment.",
+    "MultilingualEditorPage handleTranslateWholeItem has a sensible 1-retry on 'budget exceeded' with 1.5s back-off and 250ms pacing — good guardrails.",
+    "The 5-verse Hanuman Chalisa whole-item run completed all 5 verses with no failures during this test session — robust against the previously-reported intermittent 'Budget exceeded' 500.",
+    "server.py is now 5355 lines — still exceeds 700-line guideline; modularising into routers remains a TODO."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_d7_d10_charts.py (new)"
+  ],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "100% on verified flows (4-chart render, rashi labels, graha abbrevs, whole-item bulk translate, progress bar, draft persistence, button disabling regression)"},
+  "test_credentials": "admin@sanatansaathi.com / SanatanAdmin@2026 (super_admin) — read from /app/memory/test_credentials.md",
+  "seed_data_creation": "Whole-Item bulk run on Hanuman Chalisa (item 69f053c8053b601fc045a5ca) created/refreshed AI drafts for all 5 verses across mr/gu/ta/te/bn/en. The previously-published mr meaning on DOHA #1 remains intact (is_draft=false row preserved).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Both Phase 1 features (D7/D10 charts + Whole-Item bulk translate) are GREEN. /api/charts/d1-d9 now returns 4 charts; /api/kundli/generate persists d7_chart & d10_chart. NorthIndianChart renders rashi numbers at corner via data-testid=chart-house-{N}-rashi (12 per chart × 4 charts = 48 confirmed in DOM). MultilingualEditor buttons: data-testid='multi-ai-translate-whole-item' triggers bulk; data-testid='multi-bulk-progress' wrapper appears during run; both single-lang AI Translate and Translate-All-Languages get disabled while bulk is in flight (regression-safe).",
+  "rca of the issue": "N/A — no failures in this iteration."
+}
