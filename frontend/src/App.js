@@ -22,7 +22,6 @@ import SettingsPage from "./pages/SettingsPage";
 import DailySchedulerPage from "./pages/DailySchedulerPage";
 import MediaStudioPage from "./pages/MediaStudioPage";
 import NakshatraUpayaPage from "./pages/NakshatraUpayaPage";
-import GrahaKundliPage from "./pages/GrahaKundliPage";
 import IntegrationSettingsPage from "./pages/IntegrationSettingsPage";
 import AnalyticsPage from "./pages/AnalyticsPage";
 import SecurityDashboardPage from "./pages/SecurityDashboardPage";
@@ -111,7 +110,6 @@ function AppRoutes() {
         <Route path="media-studio" element={<MediaStudioPage />} />
         <Route path="vedachat" element={<VedaChatPage />} />
         <Route path="nakshatra-upaya" element={<NakshatraUpayaPage />} />
-        <Route path="graha-kundli" element={<GrahaKundliPage />} />
         <Route path="panchang" element={<PanchangPage />} />
         <Route path="users" element={<UsersPage />} />
         <Route path="admin-users" element={<AdminUsersPage />} />

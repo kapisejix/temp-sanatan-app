@@ -40,7 +40,6 @@ const navItems = [
   { to: '/admin/audio-manager', icon: Headphones, label: 'Audio Manager' },
   { to: '/admin/media-studio', icon: Image, label: 'Media Studio' },
   { to: '/admin/vedachat', icon: MessageCircle, label: 'VedaChat AI' },
-  { to: '/admin/graha-kundli', icon: Sparkles, label: 'Graha & Kundli' },
   { to: '/admin/panchang', icon: Calendar, label: 'Panchang' },
   { to: '/admin/users', icon: Users, label: 'Users' },
   { to: '/admin/admin-users', icon: Shield, label: 'Admin Users' },

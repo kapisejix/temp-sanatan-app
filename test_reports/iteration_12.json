@@ -1,0 +1,38 @@
+{
+  "summary": "Iteration 12 — Phase 1 mobile-first Kundli refactor. ALL GREEN. Backend regression: 5/5 pytest pass (POST /api/kundli/generate, GET /api/kundli/my, GET /api/charts/d1-d9 returning d1+d9+d7+d10, GET /api/dasha/current, /api/admin/translate/* still reachable). Layout-engine unit tests: 48/48 pass (font auto-scale 8..14, ≤8 tokens with +N overflow, all token x/y inside HOUSE_AREAS bbox across all 12 houses, buildChartLayout returns 12 entries with valid {houseNum, rashiNum∈[1..12], polygon:string, tokens:array}). Admin Panel: /admin/graha-kundli no longer registered — visiting it is caught by the catch-all and redirects to '/' (public homepage); 'Graha & Kundli' nav item removed from sidebar; other admin routes (/admin/dashboard, /admin/multilingual-editor, /admin/content-manager, /admin/panchang, /admin/integrations) all still render correctly with admin layout/sidebar. Mobile static-analysis: /app/expo-app/src/screens/v2/KundliScreen.js + /app/expo-app/src/components/NorthIndianChart.js + /app/expo-app/src/lib/kundliLayout.js all parse cleanly via @babel/parser; KundliScreen imports NorthIndianChart from ../../components/NorthIndianChart; react-native-svg ^15.15.4 is present in /app/expo-app/package.json.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "MultilingualEditorPage / item-select dropdown", "issues": ["Pre-existing hydration warning '<span> cannot be a child of <option>' (carry-over from iter10/iter11, cosmetic only — not introduced by this iteration)"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter12_kundli_regression.py",
+    "/app/test_reports/pytest/iter12_results.xml",
+    "/app/tests/kundli_layout_test.js"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "kundliLayout.js: clean pure-JS module (no React/RN deps) — correctly importable by both web and mobile. Font/grid/overflow logic verified for n=1..9 with all tokens staying inside per-house BBox. The 1-2-centred / 3-4-vertical / 5+ 2-col grid spec is met.",
+    "Sidebar.js + App.js: 'Graha & Kundli' fully removed (no NavLink, no Route, no GrahaKundliPage import). Catch-all '*' → Navigate to '/' is doing the redirect — a tighter UX could redirect /admin/* unknown routes back to /admin/dashboard for logged-in admins (currently they bounce to public homepage). Minor, not a blocker.",
+    "Backend server.py untouched (5355 lines) — kundli endpoints intact; iter11 modularisation TODO still applies.",
+    "Mobile NorthIndianChart.js correctly uses react-native-svg primitives (Rect/Line/Polygon/Text/G) and shared kundliLayout.js — no DOM-only APIs leaked into RN code. Parsed cleanly via @babel/parser with JSX plugin.",
+    "Mobile KundliScreen.js wires up form (Name/DOB/TOB/POB) + chart switcher (D1/D9/D7/D10) + tabs (Charts/Overview/Analysis/Remedies); imports NorthIndianChart correctly from ../../components/NorthIndianChart. Cannot exercise UI in Playwright (Expo Native) — file integrity verified instead per main-agent context note."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter12_kundli_regression.py (new)",
+    "/app/tests/kundli_layout_test.js (new)"
+  ],
+  "success_rate": {"backend": "100% (5/5 iter12 regression + iter11 still green)", "frontend": "100% on verified flows (admin route removal, sidebar cleanup, 5 other admin routes regression, layout-engine 48/48)"},
+  "test_credentials": "admin@sanatansaathi.com / SanatanAdmin@2026 (super_admin) — read from /app/memory/test_credentials.md",
+  "seed_data_creation": "POST /api/kundli/generate exercised once with payload {name='Test User', dob=1990-01-15, tob=10:30, birth_place='Delhi, India'} during regression — refreshes the existing test-user kundli; no new collections.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Phase 1 (Kundli refactor) is GREEN. To re-run regression: `export REACT_APP_BACKEND_URL=https://integrated-platform-13.preview.emergentagent.com && pytest /app/backend/tests/test_iter12_kundli_regression.py -v` and `NODE_PATH=/app/frontend/node_modules node /app/tests/kundli_layout_test.js`. Mobile UI cannot be Playwright-tested — main agent should run on Expo simulator. Pre-existing hydration warning on MultilingualEditorPage option/span persists (cosmetic).",
+  "rca of the issue": "N/A — no failures in this iteration."
+}
