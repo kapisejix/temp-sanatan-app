@@ -13,7 +13,30 @@ Multilingual spiritual platform: React Admin Panel + FastAPI Backend + Expo Mobi
 ### Session 6: Voice + Mobile App scaffold (browser STT + speaker, Expo 5-tab + AI chat modal)
 ### Session 7: Mobile Live Backend + APScheduler + VS Code/TTS guides
 
-### Session 8: Mobile Navigation Overhaul + Intent-Based Bhakti (Feb 2026 — current)
+### Session 8: Mobile Navigation Overhaul + Intent-Based Bhakti (Feb 2026)
+
+### Session 9: Multilingual Editor + Gemini AI Translation (Feb 2026 — current)
+- **New backend service** `/app/backend/translation_service.py` wrapping Gemini 2.5 Flash via `emergentintegrations.LlmChat` (uses Emergent Universal Key)
+- **8 new admin endpoints** under `/api/admin/translate/*`:
+  - `POST /text` — single text → multi-lang translation
+  - `POST /verse` — translate text/transliteration/meaning of a verse, optionally save drafts
+  - `GET /drafts/{verse_id}` — list drafts
+  - `PUT /drafts/{verse_id}/{language}` — admin manual edit
+  - `POST /drafts/{verse_id}/{language}/publish` — move into live `verse_meanings` + `content_verses.text_translations.{lang}` + `content_verses.transliteration_translations.{lang}`
+  - `DELETE /drafts/{verse_id}/{language}`
+  - `GET /languages` — supported language list
+- **Drafts collection** `verse_translation_drafts` keyed by `(verse_id, language, is_draft)` with `is_ai_generated` flag — AI never auto-publishes
+- **New admin page** `/admin/multilingual-editor` (`MultilingualEditorPage.js`):
+  - Item picker → verses list → editor pane
+  - Source language toggle (sa/hi/en) + 6 target language tabs (mr/gu/ta/te/bn/en)
+  - Per-language draft status dots (green=published, purple=AI draft, amber=manual draft)
+  - "AI Translate (current)" + "Translate All Languages" buttons
+  - Save Draft / Publish / Delete actions
+  - Frontend retry-on-budget-error UX
+- **TipTap-powered Unicode-safe editor** (`UnicodeRichEditor.js`) with proper Noto fonts for Devanagari/Gujarati/Tamil/Telugu/Bengali/Kannada/Malayalam/Gurmukhi/Oriya scripts
+- **iteration_10.json**: 11/11 backend pytest pass, frontend e2e pass on all flows
+
+### Session 8: Mobile Navigation Overhaul + Intent-Based Bhakti (Feb 2026)
 - **Per-tab Stack architecture** in App.js — fixes "inner links don't work":
   - HomeStack, BhaktiStack (11 inner screens), KundliStack, PanchangStack, ProfileStack
   - AIChat as RootStack modal (accessible from any tab)
@@ -59,6 +82,11 @@ Multilingual spiritual platform: React Admin Panel + FastAPI Backend + Expo Mobi
 - Floating 🤖 → AI Chat modal from any tab
 
 ## Backlog
+### P1 (next phases of multilingual upgrade)
+- [ ] **Phase 2: Audio-Text Synchronization** — Admin upload MP3 + LRC/JSON sync file; Mobile player highlights current verse synced with audio playback
+- [ ] **Phase 2: Mobile Beginner Mode** — Guided learning flow, Guru/Student voice looping using Google Cloud TTS
+- [ ] **Phase 2: Mobile Expert Mode** — Consumption + Reel/Video generation flow
+
 ### P2
 - [ ] User signup/login screen on mobile (currently auto-admin)
 - [ ] Pratyantardasha (3rd-level dasha)
@@ -82,3 +110,10 @@ Multilingual spiritual platform: React Admin Panel + FastAPI Backend + Expo Mobi
 - `GET /api/dosha/detect`, `POST /api/dosha/interpret`
 - `GET /api/charts/d1-d9`, `GET /api/insights/today`, `GET /api/notifications/today`
 - `POST /api/tts/synthesize`, `POST /api/vedachat/message`
+- `POST /api/admin/translate/text` — Gemini AI text translation
+- `POST /api/admin/translate/verse` — Gemini AI verse translation (text+transliteration+meaning), saves drafts
+- `GET /api/admin/translate/drafts/{verse_id}` — list drafts for a verse
+- `PUT /api/admin/translate/drafts/{verse_id}/{language}` — admin manual edit
+- `POST /api/admin/translate/drafts/{verse_id}/{language}/publish` — publish to verse_meanings + content_verses
+- `DELETE /api/admin/translate/drafts/{verse_id}/{language}` — delete draft
+- `GET /api/admin/translate/languages` — supported language list

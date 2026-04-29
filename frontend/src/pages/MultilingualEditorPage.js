@@ -123,29 +123,44 @@ export default function MultilingualEditorPage() {
     setError(null);
     setStatusMsg(null);
     setTranslating(true);
-    try {
-      const targets = allLangs
-        ? TARGET_LANGUAGES_PHASE1.map((l) => l.code).filter((c) => c !== sourceLang)
-        : [activeLang].filter((c) => c !== sourceLang);
-      const { data } = await api.post('/admin/translate/verse', {
-        source_language: sourceLang,
-        target_languages: targets,
-        text: sourceText,
-        transliteration: sourceTransliteration,
-        meaning: sourceMeaning,
-        verse_id: activeVerseId,
-      });
-      // Refetch drafts
-      const { data: drf } = await api.get(`/admin/translate/drafts/${activeVerseId}`);
-      const map = {};
-      (drf || []).forEach((d) => { map[d.language] = d; });
-      setDrafts(map);
-      setStatusMsg(`AI draft generated for ${Object.keys(data.translations || {}).length} language(s). Review & publish below.`);
-    } catch (e) {
-      setError(e?.response?.data?.detail || 'AI translation failed');
-    } finally {
-      setTranslating(false);
+    const targets = allLangs
+      ? TARGET_LANGUAGES_PHASE1.map((l) => l.code).filter((c) => c !== sourceLang)
+      : [activeLang].filter((c) => c !== sourceLang);
+    const payload = {
+      source_language: sourceLang,
+      target_languages: targets,
+      text: sourceText,
+      transliteration: sourceTransliteration,
+      meaning: sourceMeaning,
+      verse_id: activeVerseId,
+    };
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const { data } = await api.post('/admin/translate/verse', payload);
+        const { data: drf } = await api.get(`/admin/translate/drafts/${activeVerseId}`);
+        const map = {};
+        (drf || []).forEach((d) => { map[d.language] = d; });
+        setDrafts(map);
+        setStatusMsg(`AI draft generated for ${Object.keys(data.translations || {}).length} language(s). Review & publish below.`);
+        setTranslating(false);
+        return;
+      } catch (e) {
+        lastErr = e;
+        const detail = e?.response?.data?.detail || '';
+        // Retry once on transient Gemini budget hiccups
+        if (attempt === 0 && /budget|exceeded|429/i.test(detail)) {
+          await new Promise((r) => setTimeout(r, 1200));
+          continue;
+        }
+        break;
+      }
     }
+    const detail = lastErr?.response?.data?.detail || 'AI translation failed';
+    setError(/budget|exceeded/i.test(detail)
+      ? 'Gemini budget temporarily exceeded — please retry in a few seconds.'
+      : detail);
+    setTranslating(false);
   };
 
   const handleSaveDraft = async () => {
