@@ -33,7 +33,7 @@ export default function PuranaDetailScreen({ navigation, route }) {
 }
 
 const styles = StyleSheet.create({
-  content: { padding: 24, alignItems: 'center' },
+  content: { padding: 24, alignItems: 'center', paddingBottom: 100 },
   emoji: { fontSize: 60, marginVertical: 16 },
   title: { fontSize: 22, fontWeight: '800', color: COLORS.text, marginBottom: 14 },
   intro: { backgroundColor: '#FEF0EC', padding: 16, borderRadius: 12, borderWidth: 1, borderColor: '#FDDDD4', marginBottom: 18 },

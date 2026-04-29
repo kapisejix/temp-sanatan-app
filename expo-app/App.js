@@ -45,12 +45,14 @@ const TAB_ICONS = {
   ProfileTab: { icon: '👤', label: 'प्रोफ़ाइल' },
 };
 
-// Wrap each tab content with floating AI button
+// Wrap each tab root with floating AI button.
+// CRITICAL: Use pointerEvents="box-none" so the wrapping View does NOT
+// intercept touches — only the FAB itself catches taps.
 function withFAB(Component) {
   return function Wrapped(props) {
     const navigation = useNavigation();
     return (
-      <View style={{ flex: 1 }}>
+      <View style={{ flex: 1 }} pointerEvents="box-none">
         <Component {...props} />
         <FloatingAIButton onPress={() => navigation.getParent()?.navigate('AIChat')} />
       </View>

@@ -63,7 +63,7 @@ export default function AIChatScreen({ navigation }) {
         <View style={{ width: 30 }} />
       </View>
 
-      <ScrollView ref={scrollRef} style={{ flex: 1 }} contentContainerStyle={{ padding: 16 }}>
+      <ScrollView ref={scrollRef} style={{ flex: 1 }} contentContainerStyle={{ padding: 16, paddingBottom: 90 }}>
         {messages.map((m, i) => (
           <View key={i} style={[styles.bubbleRow, m.role === 'user' ? styles.bubbleRowRight : null]}>
             {m.role === 'assistant' && <View style={styles.aiAvatar}><Text style={{ color: COLORS.primary, fontSize: 13 }}>🤖</Text></View>}
