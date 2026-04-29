@@ -36,12 +36,25 @@ Multilingual spiritual platform: React Admin Panel + FastAPI Backend + Expo Mobi
 - **TipTap-powered Unicode-safe editor** (`UnicodeRichEditor.js`) with proper Noto fonts for Devanagari/Gujarati/Tamil/Telugu/Bengali/Kannada/Malayalam/Gurmukhi/Oriya scripts
 - **iteration_10.json**: 11/11 backend pytest pass, frontend e2e pass on all flows
 
-### Session 10: One-click Whole-Item Translate + D7/D10 Charts + Chart Redesign (Feb 2026 — current)
+### Session 10: One-click Whole-Item Translate + D7/D10 Charts + Chart Redesign (Feb 2026)
 - **One-click "AI Translate Whole Item"** button in Multilingual Editor — loops every verse of an item across all 6 target languages with a live progress bar, retry-on-budget, and 250ms pacing. All output stays as drafts.
 - **D7 (Saptamsa) + D10 (Dasamsa) divisional charts** — new `/app/backend/d7_engine.py` and `/app/backend/d10_engine.py` (Parashara classical rules: odd signs = same, even signs = +6 / +8 offset). Stored on `kundli_data.{d7_chart, d10_chart}` and returned by `POST /api/kundli/generate` + `GET /api/charts/d1-d9` (now also returns d7 and d10).
 - **NorthIndianChart redesign** — rashi numbers (1-12) at the inner vertex of each of 12 house cells (matches classic North Indian convention from user's reference image), graha abbreviations with degree-in-sign superscripts (e.g. शु¹⁵, के⁰², गु⁰³), distinct color per graha, retrograde marker.
 - GrahaKundliPage backfills d7/d10 from `/charts/d1-d9` for legacy kundli docs that pre-date this session.
 - **iteration_11.json**: 14/14 backend pytest pass, frontend e2e on 4-chart render + bulk translate + progress bar + button-disable regression.
+
+### Session 11: Mobile-first Kundli refactor + Chart no-overlap engine (Feb 2026 — current)
+- **Removed Grah & Kundli from Admin Panel** (route + sidebar entry). Backend kundli APIs remain intact for mobile consumption.
+- **New shared layout module** `/app/frontend/src/lib/kundliLayout.js` (also copied to `/app/expo-app/src/lib/`): pure-JS BBox-based layout engine with no-overlap guarantees:
+  - 1-2 planets → centered row; 3-4 → vertical stack; 5+ → 2-col grid
+  - Font auto-scales 8..14px based on planet count
+  - >7 planets → first 7 + "+N" overflow indicator
+  - Hindi planet abbreviations (सू/चं/मं/बु/गु/शु/श/रा/के)
+- **Web NorthIndianChart** rewritten to use the shared module
+- **Mobile NorthIndianChart** built with `react-native-svg`
+- **Mobile KundliScreen** rewritten — Form (Name/DOB/TOB/POB) + 4-tab layout: Charts (D1↔D9↔D7↔D10 chip switcher + planet table), Overview, Analysis, Remedies
+- **Deferred to Phase 2** (per user request): zoom/pan/tap-bottomsheet, animated planet transitions
+- **iteration_12.json**: 5/5 backend regression + 48/48 layout-engine unit tests + admin route removal verified.
 
 ### Session 8: Mobile Navigation Overhaul + Intent-Based Bhakti (Feb 2026)
 - **Per-tab Stack architecture** in App.js — fixes "inner links don't work":
