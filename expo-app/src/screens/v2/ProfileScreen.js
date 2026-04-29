@@ -1,13 +1,26 @@
 import React from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, Alert } from 'react-native';
 import { COLORS } from '../../config/api';
-import { KUNDLI_OVERVIEW } from '../../data/mockData';
 import SafeScreen from '../../components/SafeScreen';
+import { useAuth } from '../../contexts/AuthContext';
 
 export default function ProfileScreen({ navigation }) {
-  const user = { name: 'Test User', email: 'user@sanatansaathi.com' };
+  const { user, logout } = useAuth();
+  const displayUser = user || { name: 'User', email: '' };
+
+  const handleLogout = () => {
+    Alert.alert(
+      'लॉग-आउट',
+      'क्या आप लॉग-आउट करना चाहते हैं?',
+      [
+        { text: 'रद्द करें', style: 'cancel' },
+        { text: 'लॉग-आउट', style: 'destructive', onPress: () => logout() },
+      ]
+    );
+  };
+
   const items = [
-    { icon: '🔮', label_hi: 'मेरी कुंडली', sub: KUNDLI_OVERVIEW.user.dob, action: () => navigation.jumpTo && navigation.jumpTo('Kundli') },
+    { icon: '🔮', label_hi: 'मेरी कुंडली', sub: 'जन्म विवरण देखें/संपादित करें', action: () => navigation.jumpTo && navigation.jumpTo('KundliTab') },
     { icon: '⭐', label_hi: 'सब्सक्रिप्शन', sub: 'फ्री प्लान', action: () => {} },
     { icon: '🌐', label_hi: 'भाषा', sub: 'हिन्दी', action: () => {} },
     { icon: '🔔', label_hi: 'सूचनाएँ', sub: 'सक्षम', action: () => {} },
@@ -20,9 +33,11 @@ export default function ProfileScreen({ navigation }) {
     <SafeScreen>
       <ScrollView style={styles.root} contentContainerStyle={styles.content}>
         <View style={styles.header}>
-          <View style={styles.avatar}><Text style={styles.avatarText}>{(user.name || 'U').charAt(0)}</Text></View>
-          <Text style={styles.name}>{user.name}</Text>
-          <Text style={styles.email}>{user.email}</Text>
+          <View style={styles.avatar}>
+            <Text style={styles.avatarText}>{(displayUser.name || 'U').charAt(0).toUpperCase()}</Text>
+          </View>
+          <Text style={styles.name}>{displayUser.name}</Text>
+          <Text style={styles.email}>{displayUser.email}</Text>
         </View>
 
         {items.map((it, i) => (
@@ -35,6 +50,10 @@ export default function ProfileScreen({ navigation }) {
             <Text style={styles.rowArrow}>›</Text>
           </TouchableOpacity>
         ))}
+
+        <TouchableOpacity style={styles.logout} onPress={handleLogout} testID="profile-logout-btn">
+          <Text style={styles.logoutText}>लॉग-आउट</Text>
+        </TouchableOpacity>
       </ScrollView>
     </SafeScreen>
   );

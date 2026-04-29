@@ -1,0 +1,39 @@
+{
+  "summary": "Session 13 (mobile JWT auth + Pratyantardasha + Yoga engine) fully validated. 39/39 backend pytest cases passed including: mobile signup (success, 409 dup, 400 invalid email/short pw/short name), mobile login (200 success, 401 wrong pw, 429 brute-force lockout after 5 fails), /mobile/me (200 with user token, 401 with admin token, 401 without token), /mobile/logout (token blacklisted → next /me=401), cross-token isolation (user token works on /kundli/generate, /kundli/my, /charts/d1-d9, /dasha/current, /yogas), Pratyantardasha (9 PDs returned, current PD window contains now, sum of PD years ≈ AD years, first PD planet == AD planet), Yoga engine (5 canonical yogas always returned with shape/strength/summary; rule-correctness unit tests for Raj/Dhan/Gaj Kesari/Chandra-Mangal/Neech Bhang Raj on synthetic kundlis; _strength_bucket and _planet_status combust/exalted/debilitated logic), and admin regression (/auth/admin/login + /charts/d1-d9 + /yogas). Static analysis of /app/expo-app: AuthProvider/RootGate/AuthStack/MainTabs wiring is correct; AuthContext bootstraps via /auth/mobile/me; axios response interceptor (client.js line 85-94) NO LONGER auto-retries 401 with admin creds — security fix verified, only clears local token. Mobile UI itself is React Native (Expo), not Playwright-testable.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter14_mobile_auth_yogas_pd.py",
+    "/app/test_reports/pytest/iter14_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "yoga_engine.py: clean rule-based design; SIGN_LORDS/EXALTATION/DEBILITATION/OWN_SIGNS tables correct; _aspects_house implements special aspects for Mars(4/8), Jupiter(5/9), Saturn(3/10), Rahu/Ketu(5/9). detect_all_yogas always returns 5 canonical entries — UI-friendly.",
+    "dasha_engine.compute_pratyantardashas: PD years = (AD × sub) / 120 verified mathematically; PD sequence starts from AD planet; sum of 9 PDs ≈ AD years (test asserts within 0.05y rounding tolerance) — passes.",
+    "server.py mobile auth: signup validates email/password>=6/name>=2 and returns 400; duplicate returns 409; login uses bcrypt verify_password + login_attempts collection with identifier=ip:email:mobile, locks after 5 fails for 15 min — confirmed via test that returned 429.",
+    "get_current_app_user (server.py:5358): correctly checks Bearer header AND cookie, validates type=='access' and role=='user'. Note: cookie is checked BEFORE Bearer header — this means an admin web cookie + a user Bearer header would prefer the cookie (admin token) and reject with 401 'Not a mobile user token'. In production this is fine (mobile clients don't have web cookies), but test code must use a clean session. Documented in test fixture.",
+    "axios interceptor security fix (expo-app/src/api/client.js:85-94): on 401, only clears AsyncStorage token + USER_KEY; does NOT auto-retry with admin creds. The previous behaviour would have silently downgraded user sessions to admin — confirmed removed.",
+    "Suggestion: brute-force lockout uses identifier = ip:email:mobile. If two different users share an IP and one is attacked, the other is unaffected (good). However, lockout only resets on successful login; consider a TTL index on login_attempts so abandoned identifiers self-clean. Non-blocking.",
+    "Suggestion: /api/auth/mobile/signup returns the JWT immediately without email verification. Acceptable for v1 mobile; flag for future hardening (email OTP)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter14_mobile_auth_yogas_pd.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (39/39)",
+    "frontend": "N/A (mobile UI is React Native — static analysis only; web admin login API regressed via backend pytest)"
+  },
+  "test_credentials": "Admin: admin@sanatansaathi.com / SanatanAdmin@2026 (super_admin). Mobile users created on the fly with random uuid emails per-test (e.g. test_iter14_<hex>@sanatansaathi.com / Test@1234).",
+  "seed_data_creation": "Each test run creates ~3 ephemeral mobile users (signup test, login-isolation, logout-blacklist, brute-force) with random emails. They linger in app_users; recommend a periodic cleanup job for prefix test_iter14_/logout_/bf_ if test cadence is high. login_attempts collection is also written to during brute-force test (locked_until = now+15min) — these self-expire.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Session 13 backend = green. Reusable pytest at /app/backend/tests/test_iter14_mobile_auth_yogas_pd.py covers mobile auth (signup/login/me/logout/lockout), cross-token isolation, Pratyantardasha math, and yoga rule correctness via direct yoga_engine import (synthetic kundlis). To validate the Expo mobile UI itself, a future agent must run on a device/emulator (Expo Go) — Playwright cannot drive React Native. The backend's get_current_app_user prefers cookies over Bearer header; future tests against shared sessions should clear cookies after admin login fixtures. Brute-force lockout uses ip:email:mobile identifier with 15-minute lockout — be careful when re-running against the same email or it will still be locked.",
+  "rca of the issue": "N/A — no bugs discovered. One initial test failure (logout_blacklists_token returning 401 prematurely) was a test-fixture artifact: shared requests.Session retained admin's access_token cookie set during the admin login fixture, and get_current_app_user checks cookies before the Bearer header. Fixed by using a clean Session in that single test. Confirms backend behaviour is correct; mobile clients in production will never have an admin web cookie."
+}

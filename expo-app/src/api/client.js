@@ -51,6 +51,26 @@ async function loginDefault() {
   return null;
 }
 
+async function mobileSignup({ name, email, password, phone }) {
+  const { data } = await axios.post(`${API_BASE_URL}/auth/mobile/signup`, {
+    name, email, password, phone,
+  });
+  if (data.token) {
+    await saveToken(data.token);
+    if (data.user) await AsyncStorage.setItem(USER_KEY, JSON.stringify(data.user));
+  }
+  return data;
+}
+
+async function mobileLogin({ email, password }) {
+  const { data } = await axios.post(`${API_BASE_URL}/auth/mobile/login`, { email, password });
+  if (data.token) {
+    await saveToken(data.token);
+    if (data.user) await AsyncStorage.setItem(USER_KEY, JSON.stringify(data.user));
+  }
+  return data;
+}
+
 // Add token header
 client.interceptors.request.use(async (config) => {
   const t = await loadToken();
@@ -58,17 +78,16 @@ client.interceptors.request.use(async (config) => {
   return config;
 });
 
-// Auto-retry on 401 with default login
+// On 401, clear the local token so the AuthProvider can react and bounce the
+// user to the Login screen. (Earlier this auto-retried with admin creds — that
+// would silently downgrade a real user session into an admin one, which is a
+// security bug. Fixed in Session 13.)
 client.interceptors.response.use(
   (r) => r,
   async (error) => {
-    if (error.response?.status === 401 && !error.config.__retried) {
-      error.config.__retried = true;
-      const newToken = await loginDefault();
-      if (newToken) {
-        error.config.headers.Authorization = `Bearer ${newToken}`;
-        return axios.request(error.config);
-      }
+    if (error.response?.status === 401) {
+      await saveToken(null);
+      await AsyncStorage.removeItem(USER_KEY);
     }
     return Promise.reject(error);
   }
@@ -88,6 +107,12 @@ export const api = {
   getVedaChapterVerses: (chapterId, lang = 'hi') => axios.get(`${API_BASE_URL}/vedas/chapter-verses/${chapterId}?lang=${lang}`).then(r => r.data),
   // Audio sync (public)
   getItemAudio: (itemId) => axios.get(`${API_BASE_URL}/content/items/${itemId}/audio`).then(r => r.data),
+  // Yogas (auth)
+  detectYogas: () => client.get('/yogas').then(r => r.data),
+  // Mobile auth
+  mobileSignup,
+  mobileLogin,
+  mobileMe: () => client.get('/auth/mobile/me').then(r => r.data),
 
   // Authenticated
   ensureLogin: async () => {
@@ -107,7 +132,11 @@ export const api = {
 
   // Auth helpers
   loginDefault,
-  logout: async () => { await saveToken(null); await AsyncStorage.removeItem(USER_KEY); },
+  logout: async () => {
+    try { await client.post('/auth/mobile/logout'); } catch { /* ignore */ }
+    await saveToken(null);
+    await AsyncStorage.removeItem(USER_KEY);
+  },
   getStoredUser: async () => {
     const s = await AsyncStorage.getItem(USER_KEY);
     return s ? JSON.parse(s) : null;

@@ -106,6 +106,30 @@ def _compute_antardashas(md_lord: str, md_start: datetime, md_years: float):
     return antars
 
 
+def compute_pratyantardashas(antardasha_planet: str, ad_years: float, ad_start: datetime):
+    """Pratyantardasha (3rd-level): each PD = (AD years × SubPlanet years) / 120.
+
+    Sub-planet sequence starts from the antardasha planet itself, then follows
+    the standard Vimshottari order (Ke→V→Su→Mo→Ma→Ra→J→Sa→Me).
+    """
+    pratyantars = []
+    cur = ad_start
+    start_idx = DASHA_ORDER.index(antardasha_planet)
+    for i in range(9):
+        pd_lord = DASHA_ORDER[(start_idx + i) % 9]
+        pd_years = (ad_years * DASHA_YEARS[pd_lord]) / TOTAL_CYCLE
+        end = _add_years(cur, pd_years)
+        pratyantars.append({
+            "planet": pd_lord,
+            "planet_hi": GRAHA_HI[pd_lord],
+            "start": cur.isoformat(),
+            "end": end.isoformat(),
+            "years": round(pd_years, 4),
+        })
+        cur = end
+    return pratyantars
+
+
 def get_current_dasha(dasha_data: dict, at_dt: datetime = None):
     """Find currently running MD + AD at given datetime."""
     if at_dt is None:
@@ -127,6 +151,17 @@ def get_current_dasha(dasha_data: dict, at_dt: datetime = None):
             cur_ad = ad
             break
 
+    # Compute pratyantardashas on demand (cheap; not stored to keep doc size small)
+    cur_pd = None
+    pratyantars = []
+    if cur_ad:
+        ad_start = datetime.fromisoformat(cur_ad["start"])
+        pratyantars = compute_pratyantardashas(cur_ad["planet"], cur_ad["years"], ad_start)
+        for pd in pratyantars:
+            if pd["start"] <= at_iso < pd["end"]:
+                cur_pd = pd
+                break
+
     return {
         "mahadasha": {
             "planet": cur_md["planet"],
@@ -142,6 +177,14 @@ def get_current_dasha(dasha_data: dict, at_dt: datetime = None):
             "end": cur_ad["end"],
             "years": cur_ad["years"],
         },
+        "pratyantardasha": cur_pd and {
+            "planet": cur_pd["planet"],
+            "planet_hi": cur_pd["planet_hi"],
+            "start": cur_pd["start"],
+            "end": cur_pd["end"],
+            "years": cur_pd["years"],
+        },
+        "pratyantardashas": pratyantars,  # full PD timeline within current AD
         "as_of": at_iso,
     }
 

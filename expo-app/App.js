@@ -1,10 +1,15 @@
 import React from 'react';
-import { StatusBar, View, Text } from 'react-native';
+import { StatusBar, View, Text, ActivityIndicator } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { NavigationContainer, useNavigation } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { COLORS } from './src/config/api';
+import { AuthProvider, useAuth } from './src/contexts/AuthContext';
+
+// Auth screens
+import LoginScreen from './src/screens/auth/LoginScreen';
+import SignupScreen from './src/screens/auth/SignupScreen';
 
 // Tab root screens
 import HomeScreen from './src/screens/v2/HomeScreen';
@@ -142,16 +147,43 @@ function MainTabs() {
   );
 }
 
+function AuthStack() {
+  return (
+    <RootStack.Navigator screenOptions={{ headerShown: false }}>
+      <RootStack.Screen name="Login" component={LoginScreen} />
+      <RootStack.Screen name="Signup" component={SignupScreen} />
+    </RootStack.Navigator>
+  );
+}
+
+function RootGate() {
+  const { user, bootstrapping } = useAuth();
+  if (bootstrapping) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.background }}>
+        <Text style={{ fontSize: 50, marginBottom: 12 }}>🪔</Text>
+        <ActivityIndicator color={COLORS.primary} />
+      </View>
+    );
+  }
+  if (!user) return <AuthStack />;
+  return (
+    <RootStack.Navigator screenOptions={{ headerShown: false }}>
+      <RootStack.Screen name="Tabs" component={MainTabs} />
+      <RootStack.Screen name="AIChat" component={AIChatScreen} options={{ presentation: 'modal' }} />
+    </RootStack.Navigator>
+  );
+}
+
 export default function App() {
   return (
     <SafeAreaProvider>
       <StatusBar barStyle="dark-content" backgroundColor={COLORS.background} />
-      <NavigationContainer>
-        <RootStack.Navigator screenOptions={{ headerShown: false }}>
-          <RootStack.Screen name="Tabs" component={MainTabs} />
-          <RootStack.Screen name="AIChat" component={AIChatScreen} options={{ presentation: 'modal' }} />
-        </RootStack.Navigator>
-      </NavigationContainer>
+      <AuthProvider>
+        <NavigationContainer>
+          <RootGate />
+        </NavigationContainer>
+      </AuthProvider>
     </SafeAreaProvider>
   );
 }

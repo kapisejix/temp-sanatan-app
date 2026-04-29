@@ -242,6 +242,15 @@ async def get_current_admin(request: Request) -> dict:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         if payload.get("type") != "access":
             raise HTTPException(status_code=401, detail="Invalid token type")
+        # Mobile user token (role="user") — look up app_users
+        if payload.get("role") == "user":
+            user = await db.app_users.find_one({"_id": ObjectId(payload["sub"])})
+            if not user or not user.get("is_active", True):
+                raise HTTPException(status_code=401, detail="User not found or inactive")
+            result = serialize_doc(user)
+            result["_ip"] = get_client_ip(request)
+            return result
+        # Admin token
         admin = await db.admin_users.find_one({"_id": ObjectId(payload["sub"])})
         if not admin or not admin.get("is_active", True):
             raise HTTPException(status_code=401, detail="User not found or inactive")
@@ -4901,33 +4910,40 @@ async def _load_user_kundli(user_id):
 
 @api_router.get("/dasha/current")
 async def api_current_dasha(admin: dict = Depends(get_current_admin)):
-    """Return current Mahadasha + Antardasha + rule-based interpretation."""
+    """Return current Mahadasha + Antardasha + Pratyantardasha + rule-based interpretation."""
     kundli = await _load_user_kundli(admin["_id"])
     if not kundli:
         raise HTTPException(status_code=404, detail="No Kundli found. Generate one first.")
 
-    if kundli.get("current_dasha") and kundli.get("dasha_interpretation"):
-        return {
-            "current_dasha": kundli["current_dasha"],
-            "interpretation": kundli["dasha_interpretation"],
-            "cached": True,
-        }
-
-    # Recompute on the fly
     if not kundli.get("dasha_data"):
         raise HTTPException(status_code=500, detail="Dasha data missing — regenerate Kundli")
 
+    # Always recompute current dasha fresh (cheap) so pratyantardasha is up-to-date
     current = get_current_dasha(kundli["dasha_data"])
     if not current:
         return {"current_dasha": None, "interpretation": None, "cached": False}
-    interp = interpret_current_dasha(current, kundli.get("graha_scores", []))
-    # Update cache
+    interp = kundli.get("dasha_interpretation") or interpret_current_dasha(current, kundli.get("graha_scores", []))
     await db.kundli_data.update_one(
         {"_id": kundli["_id"]},
         {"$set": {"current_dasha": current, "dasha_interpretation": interp,
                   "updated_at": datetime.now(timezone.utc).isoformat()}},
     )
     return {"current_dasha": current, "interpretation": interp, "cached": False}
+
+
+@api_router.get("/yogas")
+async def api_detect_yogas(admin: dict = Depends(get_current_admin)):
+    """Rule-based yoga detection — Raj, Dhan, Gaj Kesari, Chandra-Mangal, Neech Bhang Raj."""
+    from yoga_engine import detect_all_yogas
+    kundli = await _load_user_kundli(admin["_id"])
+    if not kundli:
+        raise HTTPException(status_code=404, detail="No Kundli found. Generate one first.")
+    if not kundli.get("planets") or not kundli.get("ascendant"):
+        raise HTTPException(status_code=500, detail="Kundli incomplete — regenerate")
+    asc_idx = kundli["ascendant"].get("rashi_idx")
+    if asc_idx is None:
+        asc_idx = int((kundli["ascendant"].get("degree", 0) or 0) / 30)
+    return detect_all_yogas(kundli["planets"], {"rashi_idx": asc_idx})
 
 
 @api_router.post("/dasha/interpret")
@@ -5322,6 +5338,147 @@ async def admin_supported_languages(
     admin: dict = Depends(require_role(["super_admin", "content_admin"]))
 ):
     return {"languages": [{"code": k, "name": v} for k, v in _SUPPORTED_LANG_NAMES.items()]}
+
+
+# ===================== MOBILE USER AUTH =====================
+# Separate collection (`app_users`) and JWT role ("user") so admin and end-user
+# tokens never cross-pollinate. Mobile clients send `Authorization: Bearer <token>`.
+
+class MobileSignupReq(BaseModel):
+    name: str
+    email: str
+    password: str
+    phone: Optional[str] = None
+
+class MobileLoginReq(BaseModel):
+    email: str
+    password: str
+
+
+async def get_current_app_user(request: Request) -> dict:
+    token = request.cookies.get("access_token")
+    if not token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if await is_token_blacklisted(token):
+        raise HTTPException(status_code=401, detail="Token revoked")
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if payload.get("type") != "access":
+            raise HTTPException(status_code=401, detail="Invalid token type")
+        if payload.get("role") != "user":
+            raise HTTPException(status_code=401, detail="Not a mobile user token")
+        user = await db.app_users.find_one({"_id": ObjectId(payload["sub"])})
+        if not user or not user.get("is_active", True):
+            raise HTTPException(status_code=401, detail="User not found or inactive")
+        return serialize_doc(user)
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+
+@api_router.post("/auth/mobile/signup")
+async def mobile_signup(req: MobileSignupReq, request: Request):
+    email = (req.email or "").strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Valid email required")
+    if not req.password or len(req.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    if not req.name or len(req.name.strip()) < 2:
+        raise HTTPException(status_code=400, detail="Name required")
+    existing = await db.app_users.find_one({"email": email})
+    if existing:
+        raise HTTPException(status_code=409, detail="Email already registered")
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "email": email,
+        "name": req.name.strip(),
+        "phone": (req.phone or "").strip() or None,
+        "password_hash": hash_password(req.password),
+        "role": "user",
+        "is_active": True,
+        "created_at": now,
+        "updated_at": now,
+    }
+    res = await db.app_users.insert_one(doc)
+    user_id = str(res.inserted_id)
+    token = create_access_token(user_id, email, "user")
+    refresh = create_refresh_token(user_id)
+    return {
+        "token": token,
+        "refresh_token": refresh,
+        "user": {"_id": user_id, "email": email, "name": doc["name"], "phone": doc["phone"], "role": "user"},
+    }
+
+
+@api_router.post("/auth/mobile/login")
+async def mobile_login(req: MobileLoginReq, request: Request):
+    email = (req.email or "").strip().lower()
+    ip = get_client_ip(request)
+    # Brute force protection (reuse admin login_attempts logic if present, simple variant otherwise)
+    identifier = f"{ip}:{email}:mobile"
+    now = datetime.now(timezone.utc)
+    attempt_doc = await db.login_attempts.find_one({"identifier": identifier})
+    if attempt_doc and attempt_doc.get("locked_until"):
+        locked_until = attempt_doc["locked_until"]
+        if isinstance(locked_until, str):
+            locked_until = datetime.fromisoformat(locked_until)
+        if locked_until > now:
+            raise HTTPException(status_code=429, detail="Too many failed attempts. Try again later.")
+    user = await db.app_users.find_one({"email": email})
+    if not user or not verify_password(req.password, user["password_hash"]):
+        # Bump attempts
+        attempts = (attempt_doc or {}).get("count", 0) + 1
+        update = {"identifier": identifier, "count": attempts, "last_attempt_at": now.isoformat()}
+        if attempts >= 5:
+            update["locked_until"] = (now + timedelta(minutes=15)).isoformat()
+        await db.login_attempts.update_one(
+            {"identifier": identifier}, {"$set": update}, upsert=True
+        )
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not user.get("is_active", True):
+        raise HTTPException(status_code=403, detail="Account disabled")
+    # Reset attempts
+    await db.login_attempts.delete_one({"identifier": identifier})
+    user_id = str(user["_id"])
+    token = create_access_token(user_id, email, "user")
+    refresh = create_refresh_token(user_id)
+    await db.app_users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"last_login_at": now.isoformat(), "last_login_ip": ip}}
+    )
+    return {
+        "token": token,
+        "refresh_token": refresh,
+        "user": {
+            "_id": user_id, "email": email, "name": user.get("name"),
+            "phone": user.get("phone"), "role": "user",
+        },
+    }
+
+
+@api_router.get("/auth/mobile/me")
+async def mobile_me(user: dict = Depends(get_current_app_user)):
+    return {
+        "_id": user["_id"], "email": user["email"], "name": user.get("name"),
+        "phone": user.get("phone"), "role": "user",
+        "created_at": user.get("created_at"), "last_login_at": user.get("last_login_at"),
+    }
+
+
+@api_router.post("/auth/mobile/logout")
+async def mobile_logout(request: Request, user: dict = Depends(get_current_app_user)):
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        await blacklist_token(auth_header[7:])
+    return {"message": "Logged out"}
+
+
+# ===================== MOBILE USER AUTH END =====================
 
 
 # ===================== AUDIO-TEXT SYNCHRONIZATION (Phase 2) =====================
