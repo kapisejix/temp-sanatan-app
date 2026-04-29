@@ -56,7 +56,7 @@ Multilingual spiritual platform: React Admin Panel + FastAPI Backend + Expo Mobi
 - **Deferred to Phase 2** (per user request): zoom/pan/tap-bottomsheet, animated planet transitions
 - **iteration_12.json**: 5/5 backend regression + 48/48 layout-engine unit tests + admin route removal verified.
 
-### Session 12: Phase 2 — Audio-Text Sync + Mobile Beginner Mode (Feb 2026 — current)
+### Session 12: Phase 2 — Audio-Text Sync + Mobile Beginner Mode (Feb 2026)
 - **Backend `/app/backend/audio_sync_service.py`** — LRC + JSON sync-map parser with sort + end_ms backfill from next start_ms.
 - **3 new endpoints** under `/api/content/items/{item_id}/audio`:
   - `POST` — multipart (audio + sync_file + duration_ms), saves to `/app/backend/static/audio/items/{id}.{ext}`, persists `audio_sync` doc with sync_map + audio_url. Includes 25 MB safety guard, audio extension whitelist (mp3/m4a/wav/ogg/aac).
@@ -67,6 +67,30 @@ Multilingual spiritual platform: React Admin Panel + FastAPI Backend + Expo Mobi
 - **Mobile `ContentDetailScreen.js` rewrite** — fetches `/content/items/{id}/audio`; if synced audio exists plays real MP3 with verse-by-verse highlighting on `positionMillis`; falls back to TTS for items without sync. Verses rendered as numbered cards that scale + highlight when active.
 - **Mobile Beginner Mode** (🎓 शिक्षण मोड) — for synced items, plays each verse via Google Cloud TTS 3 times with 1.2s pauses, then advances. Banner shows current verse + Stop button.
 - **iteration_13.json**: 24/24 backend pytest pass + frontend admin flow green.
+
+### Session 13: Mobile Auth + Pratyantardasha + Yoga Engine (Feb 2026 — current)
+- **Mobile JWT Auth** (followed integration_playbook_expert_v2 playbook):
+  - New collection `app_users` (separate from `admin_users`). Bcrypt hashing, PyJWT HS256, 24h access + 7d refresh tokens.
+  - 4 endpoints: `POST /api/auth/mobile/signup`, `POST /api/auth/mobile/login`, `GET /api/auth/mobile/me`, `POST /api/auth/mobile/logout` (token blacklisted).
+  - Brute-force protection: 5 failed attempts in 15 min on `ip:email:mobile` → 429.
+  - `get_current_admin` extended to also accept user-role tokens, so kundli/dasha/yoga/tts endpoints work for mobile users while admin-role-gated endpoints reject them.
+- **Mobile UI**:
+  - `AuthProvider` + `RootGate` in `App.js` switches between `AuthStack` (Login + Signup) and `MainTabs` based on bootstrap state.
+  - `LoginScreen.js`, `SignupScreen.js` (Hindi labels, validations, error handling).
+  - `ProfileScreen.js` reads user from context, has logout button.
+  - **Security fix**: axios 401-interceptor no longer auto-retries with admin creds (would silently downgrade user → admin sessions). Now just clears local token.
+- **Pratyantardasha (3rd-level)**: `compute_pratyantardashas(ad_planet, ad_years, ad_start)` returns 9 PDs with PD-years = (AD-years × SubPlanet-years)/120; PD sequence starts from the AD planet. `get_current_dasha` now returns `mahadasha + antardasha + pratyantardasha + pratyantardashas[]`.
+- **Yoga Detection Engine `/app/backend/yoga_engine.py`** — rule-based, deterministic detection of:
+  - **Raj Yoga** — Kendra lord (1/4/7/10) + Trikona lord (1/5/9) connection (conjunction or mutual aspect).
+  - **Dhan Yoga** — 2nd lord + 11th lord connection.
+  - **Gaj Kesari Yoga** — Jupiter in 1/4/7/10 from Moon.
+  - **Chandra-Mangal Yoga** — Moon + Mars conjunction.
+  - **Neech Bhang Raj Yoga** — debilitated planet + cancellation conditions (sign-lord in Kendra OR exalter in Kendra).
+  - Strength bucketing (low/medium/high) factors exaltation, own sign, debilitation, retrograde, combustion.
+  - Always returns all 5 canonical yogas (status=false for absent ones) so UI can show full state.
+- **New endpoint** `GET /api/yogas` returns `{yogas:[5], summary:{total_present, total_checked, high_strength}}`.
+- **Special aspects** correctly modeled: Mars 4/8, Jupiter 5/9, Saturn 3/10, Rahu/Ketu 5/9.
+- **iteration_14.json**: 39/39 backend pytest pass — mobile auth (signup/login/me/logout + 429 lockout), cross-token isolation, Pratyantardasha math, all 5 yoga rules + strength bucketing, admin regression.
 
 ### Session 8: Mobile Navigation Overhaul + Intent-Based Bhakti (Feb 2026)
 - **Per-tab Stack architecture** in App.js — fixes "inner links don't work":
@@ -120,9 +144,10 @@ Multilingual spiritual platform: React Admin Panel + FastAPI Backend + Expo Mobi
 - [ ] Animated planet transitions between D1↔D9↔D7↔D10 (deferred from Phase 1)
 
 ### P2
-- [ ] User signup/login screen on mobile (currently auto-admin)
-- [ ] Pratyantardasha (3rd-level dasha)
-- [ ] Yoga detection (Raj/Dhana/Gajakesari)
+- [ ] Pratyantardasha (3rd-level dasha) ✓ DONE in Session 13
+- [ ] Yoga detection (Raj/Dhana/Gajakesari) ✓ DONE in Session 13 (incl. Chandra-Mangal & Neech Bhang Raj)
+- [ ] Email OTP verification on mobile signup (currently auto-login)
+- [ ] Mobile push notifications (FCM/APNS)
 - [ ] Refactor `server.py` (~5100 lines) → `routes/` modules
 - [ ] Push notifications via Expo Notifications + OneSignal
 - [ ] EAS build configs for Play Store + App Store
