@@ -38,6 +38,7 @@ const navItems = [
   { to: '/admin/granth-manager', icon: Library, label: 'Granth Manager' },
   { to: '/admin/vedas-manager', icon: BookMarked, label: 'Vedas & Puranas' },
   { to: '/admin/audio-manager', icon: Headphones, label: 'Audio Manager' },
+  { to: '/admin/audio-sync', icon: Music, label: 'Audio Sync' },
   { to: '/admin/media-studio', icon: Image, label: 'Media Studio' },
   { to: '/admin/vedachat', icon: MessageCircle, label: 'VedaChat AI' },
   { to: '/admin/panchang', icon: Calendar, label: 'Panchang' },

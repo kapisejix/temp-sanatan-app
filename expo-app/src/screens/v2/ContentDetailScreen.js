@@ -1,53 +1,112 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
 import { Audio } from 'expo-av';
-import { COLORS } from '../../config/api';
+import { COLORS, API_BASE_URL } from '../../config/api';
 import { DEITY_CONTENT, DAILY_BHAKTI } from '../../data/mockData';
 import SafeScreen from '../../components/SafeScreen';
 import ScreenHeader from '../../components/ScreenHeader';
 import api from '../../api/client';
 
-// Find content by id across deities and daily mantras
+// ---- Helpers ----
 function findContent(contentId) {
   for (const d of Object.values(DEITY_CONTENT)) {
     const item = d.items.find(i => i.id === contentId);
     if (item) return item;
   }
-  // Fallback to daily bhakti — minimal text
   const all = [...DAILY_BHAKTI.morning, ...DAILY_BHAKTI.evening];
   const item = all.find(i => i.id === contentId);
   if (item) return { ...item, type_hi: 'दैनिक', text_hi: `${item.title_hi}\n\n(पूर्ण पाठ admin database से जल्द ही)` };
   return null;
 }
 
+// Mock-content id -> backend item_id map. For real-content items the contentId
+// itself is a Mongo ObjectId; for the mock DEITY_CONTENT ids we need to look up.
+const MOCK_TO_BACKEND_ID = {
+  // Hanuman Chalisa is seeded in DB at this id
+  'hanuman-chalisa': '69f053c8053b601fc045a5ca',
+};
+
+function resolveBackendId(contentId) {
+  if (!contentId) return null;
+  if (MOCK_TO_BACKEND_ID[contentId]) return MOCK_TO_BACKEND_ID[contentId];
+  // 24-char hex looks like a Mongo ObjectId
+  if (/^[a-f0-9]{24}$/i.test(contentId)) return contentId;
+  return null;
+}
+
 export default function ContentDetailScreen({ navigation, route }) {
   const { contentId } = route.params || {};
   const item = findContent(contentId);
+  const backendId = resolveBackendId(contentId);
+
   const [playing, setPlaying] = useState(false);
   const [loading, setLoading] = useState(false);
   const [audioErr, setAudioErr] = useState('');
-  const soundRef = useRef(null);
 
+  const [audioMeta, setAudioMeta] = useState(null);     // { audio_url, sync_map, ... }
+  const [activeVerseNum, setActiveVerseNum] = useState(0); // 1-indexed; 0 = none
+  const [beginnerMode, setBeginnerMode] = useState(false);
+  const [beginnerLoopNum, setBeginnerLoopNum] = useState(0); // current verse being looped
+
+  const soundRef = useRef(null);
+  const beginnerRef = useRef({ active: false, verse: 0, loopCount: 0 });
+
+  // ---- Fetch audio sync metadata ----
+  useEffect(() => {
+    let cancel = false;
+    if (!backendId) return;
+    (async () => {
+      try {
+        const data = await api.getItemAudio(backendId);
+        if (!cancel && data?.audio_url) {
+          // Resolve relative URL to full URL
+          const fullUrl = data.audio_url.startsWith('http')
+            ? data.audio_url
+            : `${API_BASE_URL.replace(/\/api$/, '')}${data.audio_url}`;
+          setAudioMeta({ ...data, audio_url: fullUrl });
+        }
+      } catch { /* no audio yet, fall back to TTS */ }
+    })();
+    return () => { cancel = true; };
+  }, [backendId]);
+
+  // ---- Cleanup on unmount ----
   useEffect(() => {
     return () => {
+      beginnerRef.current.active = false;
       if (soundRef.current) {
         soundRef.current.unloadAsync().catch(() => {});
+        soundRef.current = null;
       }
     };
   }, []);
 
-  if (!item) {
-    return (
-      <SafeScreen>
-        <ScreenHeader title="त्रुटि" onBack={() => navigation.goBack()} />
-        <View style={{ padding: 20 }}><Text>सामग्री नहीं मिली</Text></View>
-      </SafeScreen>
-    );
-  }
+  // ---- Active-verse highlighter (driven by playback position) ----
+  const onPlaybackUpdate = useCallback((status) => {
+    if (!status.isLoaded) return;
+    if (status.didJustFinish) {
+      setPlaying(false);
+      setActiveVerseNum(0);
+      return;
+    }
+    if (audioMeta?.sync_map?.length && status.positionMillis != null) {
+      const pos = status.positionMillis;
+      const cur = audioMeta.sync_map.find(
+        (v) => pos >= v.start_ms && (v.end_ms == null || pos < v.end_ms)
+      );
+      if (cur && cur.verse_num !== activeVerseNum) setActiveVerseNum(cur.verse_num);
+    }
+  }, [audioMeta, activeVerseNum]);
 
+  // ---- Main play/pause toggle ----
   const handlePlay = async () => {
     try {
       setAudioErr('');
+      // Disable beginner mode when manually playing
+      beginnerRef.current.active = false;
+      setBeginnerMode(false);
+      setBeginnerLoopNum(0);
+
       if (soundRef.current) {
         const status = await soundRef.current.getStatusAsync();
         if (status.isLoaded) {
@@ -62,62 +121,275 @@ export default function ContentDetailScreen({ navigation, route }) {
         }
       }
       setLoading(true);
-      // Try real TTS via backend
-      try {
-        const tts = await api.ttsSynthesize(item.text_hi.slice(0, 3500), 'hi');
-        const { sound } = await Audio.Sound.createAsync(
+
+      let sound;
+      if (audioMeta?.audio_url) {
+        // Real MP3 with sync map
+        const result = await Audio.Sound.createAsync(
+          { uri: audioMeta.audio_url },
+          { shouldPlay: true, progressUpdateIntervalMillis: 200 }
+        );
+        sound = result.sound;
+      } else {
+        // Fallback to TTS
+        const tts = await api.ttsSynthesize((item.text_hi || '').slice(0, 3500), 'hi');
+        const result = await Audio.Sound.createAsync(
           { uri: `data:audio/mpeg;base64,${tts.audio_base64}` },
           { shouldPlay: true }
         );
-        soundRef.current = sound;
-        sound.setOnPlaybackStatusUpdate(s => {
-          if (s.didJustFinish) setPlaying(false);
-        });
-        setPlaying(true);
-      } catch (e) {
-        setAudioErr('ऑडियो उत्पन्न नहीं हो सका — Integration Hub में Google Cloud TTS कॉन्फ़िगर करें');
+        sound = result.sound;
       }
+      soundRef.current = sound;
+      sound.setOnPlaybackStatusUpdate(onPlaybackUpdate);
+      setPlaying(true);
     } catch (e) {
-      setAudioErr('प्लेबैक त्रुटि');
+      setAudioErr('ऑडियो उत्पन्न नहीं हो सका — Integration Hub में Google Cloud TTS कॉन्फ़िगर करें');
     } finally {
       setLoading(false);
     }
   };
 
+  // ---- Beginner Mode: Guru → pause → Student repeat (3x), then next verse ----
+  const stopAllSound = async () => {
+    if (soundRef.current) {
+      try { await soundRef.current.stopAsync(); } catch {}
+      try { await soundRef.current.unloadAsync(); } catch {}
+      soundRef.current = null;
+    }
+  };
+
+  const playVerseTTS = async (text) => {
+    const tts = await api.ttsSynthesize(text, 'hi');
+    const { sound } = await Audio.Sound.createAsync(
+      { uri: `data:audio/mpeg;base64,${tts.audio_base64}` },
+      { shouldPlay: true }
+    );
+    soundRef.current = sound;
+    return new Promise((resolve) => {
+      sound.setOnPlaybackStatusUpdate((s) => {
+        if (s.isLoaded && s.didJustFinish) {
+          sound.unloadAsync().catch(() => {});
+          if (soundRef.current === sound) soundRef.current = null;
+          resolve();
+        }
+      });
+    });
+  };
+
+  const startBeginnerMode = async () => {
+    if (!audioMeta?.sync_map?.length) {
+      setAudioErr('Beginner Mode के लिए सिंक्रोनाइज़्ड वर्सेज़ चाहिए (Admin से Audio Sync अपलोड करें)');
+      return;
+    }
+    setAudioErr('');
+    await stopAllSound();
+    setPlaying(false);
+    setBeginnerMode(true);
+    beginnerRef.current = { active: true, verse: 0, loopCount: 0 };
+
+    const verses = audioMeta.sync_map;
+    for (let i = 0; i < verses.length; i++) {
+      if (!beginnerRef.current.active) break;
+      const v = verses[i];
+      setBeginnerLoopNum(v.verse_num);
+      setActiveVerseNum(v.verse_num);
+
+      // Play 3 times: Guru → 1.2s pause → Student (replay) → pause
+      for (let loop = 0; loop < 3; loop++) {
+        if (!beginnerRef.current.active) break;
+        try { await playVerseTTS(v.text); } catch { /* skip on fail */ }
+        if (!beginnerRef.current.active) break;
+        await new Promise((r) => setTimeout(r, 1200));
+      }
+    }
+    if (beginnerRef.current.active) {
+      // Finished naturally
+      beginnerRef.current.active = false;
+      setBeginnerMode(false);
+      setBeginnerLoopNum(0);
+      setActiveVerseNum(0);
+    }
+  };
+
+  const stopBeginnerMode = async () => {
+    beginnerRef.current.active = false;
+    await stopAllSound();
+    setBeginnerMode(false);
+    setBeginnerLoopNum(0);
+    setActiveVerseNum(0);
+  };
+
+  // ---- Verse rendering (uses sync_map text if present, else split by lines) ----
+  const verses = useMemo(() => {
+    if (audioMeta?.sync_map?.length) {
+      return audioMeta.sync_map.map((v) => ({ verse_num: v.verse_num, text: v.text }));
+    }
+    if (!item) return [];
+    // Fallback: split on blank lines
+    const parts = (item.text_hi || '').split(/\n\n+/).map((s) => s.trim()).filter(Boolean);
+    return parts.map((text, i) => ({ verse_num: i + 1, text }));
+  }, [audioMeta, item]);
+
+  if (!item) {
+    return (
+      <SafeScreen>
+        <ScreenHeader title="त्रुटि" onBack={() => navigation.goBack()} />
+        <View style={{ padding: 20 }}><Text>सामग्री नहीं मिली</Text></View>
+      </SafeScreen>
+    );
+  }
+
+  const hasSyncedAudio = !!audioMeta?.audio_url && audioMeta?.sync_map?.length > 0;
+
   return (
     <SafeScreen>
       <ScreenHeader title={item.title_hi} subtitle={item.title_en || item.type_hi} onBack={() => navigation.goBack()} />
+
+      {/* Audio control bar */}
       <View style={styles.audioBar}>
         <TouchableOpacity
           style={[styles.playBtn, playing && styles.playBtnActive]}
           onPress={handlePlay}
-          disabled={loading}
+          disabled={loading || beginnerMode}
           testID="content-play-btn"
         >
-          <Text style={styles.playBtnText}>{loading ? '⏳ लोड…' : (playing ? '⏸ रोकें' : '▶ ऑडियो सुनें')}</Text>
+          <Text style={styles.playBtnText}>
+            {loading ? '⏳ लोड…' : (playing ? '⏸ रोकें' : '▶ ऑडियो सुनें')}
+          </Text>
         </TouchableOpacity>
-        {!!item.duration && <Text style={styles.durationText}>{item.duration}</Text>}
+
+        <TouchableOpacity
+          style={[styles.beginnerBtn, beginnerMode && styles.beginnerBtnActive]}
+          onPress={beginnerMode ? stopBeginnerMode : startBeginnerMode}
+          disabled={loading}
+          testID="content-beginner-btn"
+        >
+          <Text style={[styles.beginnerBtnText, beginnerMode && styles.beginnerBtnTextActive]}>
+            {beginnerMode ? '⏹ रोकें' : '🎓 शिक्षण मोड'}
+          </Text>
+        </TouchableOpacity>
       </View>
+
+      {/* Status / mode banners */}
+      {hasSyncedAudio && (
+        <View style={styles.syncedBanner}>
+          <Text style={styles.syncedText}>🎵 सिंक्रोनाइज़्ड ऑडियो उपलब्ध · {audioMeta.sync_map.length} पंक्तियाँ</Text>
+        </View>
+      )}
+      {beginnerMode && (
+        <View style={styles.beginnerBanner}>
+          <ActivityIndicator color="#7B3F61" size="small" />
+          <Text style={styles.beginnerBannerText}>
+            शिक्षण मोड — पंक्ति {beginnerLoopNum} (गुरु → शिष्य लूप)
+          </Text>
+        </View>
+      )}
       {!!audioErr && (
         <View style={styles.errBox}>
           <Text style={styles.errText}>{audioErr}</Text>
         </View>
       )}
+
+      {/* Verse-highlighted text body */}
       <ScrollView contentContainerStyle={styles.textContent} showsVerticalScrollIndicator={true}>
-        <Text style={styles.bodyText}>{item.text_hi}</Text>
+        {verses.length > 0 ? (
+          verses.map((v) => {
+            const isActive = activeVerseNum === v.verse_num;
+            return (
+              <View
+                key={v.verse_num}
+                style={[styles.verseBlock, isActive && styles.verseBlockActive]}
+                testID={`verse-block-${v.verse_num}`}
+              >
+                <Text style={[styles.verseNum, isActive && styles.verseNumActive]}>
+                  {v.verse_num}
+                </Text>
+                <Text style={[styles.verseText, isActive && styles.verseTextActive]}>
+                  {v.text}
+                </Text>
+              </View>
+            );
+          })
+        ) : (
+          <Text style={styles.bodyText}>{item.text_hi}</Text>
+        )}
       </ScrollView>
     </SafeScreen>
   );
 }
 
 const styles = StyleSheet.create({
-  audioBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#FEF0EC', borderBottomWidth: 1, borderBottomColor: '#FDDDD4', paddingHorizontal: 16, paddingVertical: 12 },
-  playBtn: { backgroundColor: COLORS.primary, paddingHorizontal: 20, paddingVertical: 10, borderRadius: 24 },
+  audioBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEF0EC',
+    borderBottomWidth: 1,
+    borderBottomColor: '#FDDDD4',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    gap: 8,
+  },
+  playBtn: { backgroundColor: COLORS.primary, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 24, flex: 1 },
   playBtnActive: { backgroundColor: '#D04E2C' },
-  playBtnText: { color: '#FFF', fontWeight: '700', fontSize: 14 },
-  durationText: { fontSize: 12, color: COLORS.textSecondary, fontWeight: '600' },
+  playBtnText: { color: '#FFF', fontWeight: '700', fontSize: 14, textAlign: 'center' },
+
+  beginnerBtn: {
+    backgroundColor: '#FFF', borderWidth: 1, borderColor: '#7B3F61',
+    paddingHorizontal: 14, paddingVertical: 10, borderRadius: 24,
+  },
+  beginnerBtnActive: { backgroundColor: '#7B3F61' },
+  beginnerBtnText: { color: '#7B3F61', fontWeight: '700', fontSize: 13 },
+  beginnerBtnTextActive: { color: '#FFF' },
+
+  syncedBanner: { backgroundColor: '#ECFDF5', paddingHorizontal: 16, paddingVertical: 6 },
+  syncedText: { fontSize: 11, color: '#065F46', fontWeight: '600' },
+  beginnerBanner: {
+    backgroundColor: '#F5F3FF', flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 16, paddingVertical: 8, gap: 10,
+  },
+  beginnerBannerText: { fontSize: 12, color: '#5B21B6', fontWeight: '600' },
+
   errBox: { backgroundColor: '#FEE2E2', paddingHorizontal: 16, paddingVertical: 8 },
   errText: { fontSize: 11, color: '#991B1B' },
-  textContent: { padding: 20, paddingBottom: 80 },
+
+  textContent: { padding: 16, paddingBottom: 80 },
   bodyText: { fontSize: 17, color: COLORS.text, lineHeight: 30, fontWeight: '500' },
+
+  verseBlock: {
+    flexDirection: 'row',
+    backgroundColor: '#FFF',
+    borderRadius: 10,
+    padding: 14,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  verseBlockActive: {
+    backgroundColor: '#FEF0EC',
+    borderColor: COLORS.primary,
+    borderWidth: 2,
+    transform: [{ scale: 1.01 }],
+  },
+  verseNum: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: COLORS.textSecondary,
+    width: 28,
+    textAlign: 'center',
+    marginRight: 8,
+  },
+  verseNumActive: {
+    color: COLORS.primary,
+  },
+  verseText: {
+    flex: 1,
+    fontSize: 16,
+    color: COLORS.text,
+    lineHeight: 28,
+    fontWeight: '500',
+  },
+  verseTextActive: {
+    fontWeight: '700',
+    color: COLORS.text,
+  },
 });

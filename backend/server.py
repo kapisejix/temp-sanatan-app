@@ -5,6 +5,7 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, UploadFile, File, Form, Depends
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -5323,6 +5324,114 @@ async def admin_supported_languages(
     return {"languages": [{"code": k, "name": v} for k, v in _SUPPORTED_LANG_NAMES.items()]}
 
 
+# ===================== AUDIO-TEXT SYNCHRONIZATION (Phase 2) =====================
+import shutil
+from pathlib import Path as _Path
+from audio_sync_service import parse_sync_file
+
+AUDIO_STATIC_DIR = _Path("/app/backend/static/audio/items")
+AUDIO_STATIC_DIR.mkdir(parents=True, exist_ok=True)
+
+
+@api_router.post("/content/items/{item_id}/audio")
+async def upload_item_audio(
+    item_id: str,
+    audio: UploadFile = File(...),
+    sync_file: Optional[UploadFile] = File(None),
+    sync_format: Optional[str] = Form(None),  # 'lrc' | 'json' (auto-detected from filename when None)
+    duration_ms: Optional[int] = Form(None),
+    admin: dict = Depends(require_role(["super_admin", "content_admin"]))
+):
+    """Upload (or replace) an MP3 + optional LRC/JSON sync file for a content item.
+
+    The mp3 is stored on disk under /app/backend/static/audio/items/{item_id}.mp3
+    and exposed via the static mount at /api/audio-static/items/{item_id}.mp3
+    """
+    # Validate item exists
+    try:
+        item_doc = await db.content_items.find_one({"_id": ObjectId(item_id)})
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid item_id")
+    if not item_doc:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    # Save MP3
+    if not audio.filename:
+        raise HTTPException(status_code=400, detail="Audio file required")
+    ext = (audio.filename.rsplit('.', 1)[-1] or 'mp3').lower()
+    if ext not in {"mp3", "m4a", "wav", "ogg", "aac"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported audio format: .{ext}")
+    target_path = AUDIO_STATIC_DIR / f"{item_id}.{ext}"
+    # Save file bytes
+    with target_path.open("wb") as f:
+        shutil.copyfileobj(audio.file, f)
+
+    # Parse sync file if provided
+    sync_map: List[Dict[str, Any]] = []
+    if sync_file is not None and sync_file.filename:
+        sync_bytes = await sync_file.read()
+        try:
+            sync_map = parse_sync_file(sync_file.filename, sync_bytes)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Sync file parse error: {e}")
+        # Backfill last verse's end_ms from duration if known
+        if sync_map and sync_map[-1].get("end_ms") is None and duration_ms:
+            sync_map[-1]["end_ms"] = int(duration_ms)
+
+    audio_url = f"/api/audio-static/items/{item_id}.{ext}"
+    audio_meta = {
+        "audio_url": audio_url,
+        "sync_map": sync_map,
+        "duration_ms": duration_ms,
+        "format": ext,
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+        "uploaded_by": admin["_id"],
+    }
+    await db.content_items.update_one(
+        {"_id": ObjectId(item_id)},
+        {"$set": {"audio_sync": audio_meta, "audio_url": audio_url, "updated_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    return {"message": "Audio uploaded", "audio_url": audio_url, "sync_verses": len(sync_map)}
+
+
+@api_router.get("/content/items/{item_id}/audio")
+async def get_item_audio(item_id: str):
+    """Public endpoint — mobile fetches audio_url + sync_map for playback + verse highlighting."""
+    try:
+        item = await db.content_items.find_one({"_id": ObjectId(item_id)}, {"audio_sync": 1, "_id": 0})
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid item_id")
+    if not item or not item.get("audio_sync"):
+        return {"audio_url": None, "sync_map": [], "duration_ms": None}
+    return item["audio_sync"]
+
+
+@api_router.delete("/content/items/{item_id}/audio")
+async def delete_item_audio(
+    item_id: str,
+    admin: dict = Depends(require_role(["super_admin", "content_admin"]))
+):
+    try:
+        item = await db.content_items.find_one({"_id": ObjectId(item_id)}, {"audio_sync": 1})
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid item_id")
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    audio_meta = item.get("audio_sync") or {}
+    fmt = audio_meta.get("format", "mp3")
+    target_path = AUDIO_STATIC_DIR / f"{item_id}.{fmt}"
+    if target_path.exists():
+        try:
+            target_path.unlink()
+        except Exception:
+            pass
+    await db.content_items.update_one(
+        {"_id": ObjectId(item_id)},
+        {"$unset": {"audio_sync": "", "audio_url": ""}}
+    )
+    return {"message": "Audio deleted"}
+
+
 # ===================== ROOT =====================
 
 @api_router.get("/")
@@ -5330,6 +5439,11 @@ async def root():
     return {"message": "Sanatan Saathi API", "version": "2.0"}
 
 app.include_router(api_router)
+
+# Mount static audio files (uploaded MP3s for content items)
+_AUDIO_DIR = "/app/backend/static/audio"
+os.makedirs(_AUDIO_DIR, exist_ok=True)
+app.mount("/api/audio-static", StaticFiles(directory=_AUDIO_DIR), name="audio-static")
 
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
