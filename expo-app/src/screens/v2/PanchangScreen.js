@@ -10,30 +10,147 @@ const TABS = ['Today', 'Monthly', 'Festivals', 'Muhurat'];
 const TAB_LABELS = { Today: 'आज', Monthly: 'मासिक', Festivals: 'त्योहार', Muhurat: 'मुहूर्त' };
 
 function TodayTab() {
-  const { data } = useApiData(api.getPanchangToday, TODAY_PANCHANG, []);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const { data } = useApiData(() => api.getPanchangDay({}), null, []);
   const t = data || TODAY_PANCHANG;
+
   return (
     <View>
-      <View style={styles.bigCard}>
-        <Text style={styles.bigDate}>{t.date}</Text>
-        <Text style={styles.bigDay}>{t.weekday_hi}</Text>
-      </View>
-      <View style={styles.grid}>
-        {[
-          ['तिथि', t.tithi_hi],
-          ['नक्षत्र', t.nakshatra_hi],
-          ['योग', t.yoga_hi],
-          ['करण', t.karana_hi],
-          ['सूर्योदय', t.sunrise],
-          ['सूर्यास्त', t.sunset],
-          ['राहु काल', t.rahu_kaal],
-        ].map(([k, v]) => (
-          <View key={k} style={styles.gridCell}>
-            <Text style={styles.gridLabel}>{k}</Text>
-            <Text style={styles.gridValue}>{v}</Text>
+      {/* Hero / Main Line */}
+      <View style={styles.hero}>
+        <Text style={styles.heroDate}>{t.date_str_hi || t.date}</Text>
+        <Text style={styles.heroDay}>{t.weekday_hi}</Text>
+        <View style={styles.heroDivider} />
+        <Text style={styles.heroMain}>{t.main_line_hi || `${t.tithi_hi}`}</Text>
+        <View style={styles.heroSunRow}>
+          <View style={{ flex: 1, alignItems: 'center' }}>
+            <Text style={styles.sunLabel}>🌅 सूर्योदय</Text>
+            <Text style={styles.sunValue}>{t.sunrise}</Text>
           </View>
-        ))}
+          <View style={styles.heroSunSep} />
+          <View style={{ flex: 1, alignItems: 'center' }}>
+            <Text style={styles.sunLabel}>🌇 सूर्यास्त</Text>
+            <Text style={styles.sunValue}>{t.sunset}</Text>
+          </View>
+        </View>
       </View>
+
+      {/* Summary card */}
+      <View style={styles.section}>
+        <Text style={styles.sectionLabel}>पंचांग सारांश</Text>
+        <View style={styles.grid}>
+          {[
+            ['तिथि', t.tithi_hi, t.tithi_end && `${t.tithi_end} तक`],
+            ['नक्षत्र', t.nakshatra_hi, t.nakshatra_end && `${t.nakshatra_end} तक`],
+            ['योग', t.yoga_hi, t.yoga_end && `${t.yoga_end} तक`],
+            ['करण', t.karana_hi, null],
+          ].map(([k, v, sub]) => (
+            <View key={k} style={styles.gridCell}>
+              <Text style={styles.gridLabel}>{k}</Text>
+              <Text style={styles.gridValue}>{v || '-'}</Text>
+              {sub ? <Text style={styles.gridSub}>{sub}</Text> : null}
+            </View>
+          ))}
+        </View>
+      </View>
+
+      {/* Shubh Muhurat */}
+      <View style={styles.section}>
+        <Text style={styles.sectionLabel}>✨ शुभ मुहूर्त</Text>
+        {t.abhijit_muhurta ? (
+          <View style={styles.muhRow}>
+            <Text style={styles.muhName}>अभिजित मुहूर्त</Text>
+            <Text style={styles.muhTime}>{t.abhijit_muhurta}</Text>
+          </View>
+        ) : (
+          <Text style={styles.muhNone}>आज अभिजित मुहूर्त नहीं (बुधवार)</Text>
+        )}
+        {t.amrit_kalam ? (
+          <View style={styles.muhRow}>
+            <Text style={styles.muhName}>अमृत काल</Text>
+            <Text style={styles.muhTime}>{t.amrit_kalam}</Text>
+          </View>
+        ) : null}
+      </View>
+
+      {/* Ashubh Kaal */}
+      <View style={styles.section}>
+        <Text style={styles.sectionLabel}>⚠️ अशुभ काल</Text>
+        <View style={styles.muhRow}>
+          <Text style={styles.muhName}>राहु काल</Text>
+          <Text style={styles.muhTime}>{t.rahu_kaal || '-'}</Text>
+        </View>
+        {t.gulika_kaal ? (
+          <View style={styles.muhRow}>
+            <Text style={styles.muhName}>गुलिक काल</Text>
+            <Text style={styles.muhTime}>{t.gulika_kaal}</Text>
+          </View>
+        ) : null}
+        {t.yamagandam ? (
+          <View style={styles.muhRow}>
+            <Text style={styles.muhName}>यमगण्ड</Text>
+            <Text style={styles.muhTime}>{t.yamagandam}</Text>
+          </View>
+        ) : null}
+      </View>
+
+      {/* Festivals */}
+      {t.festivals?.length > 0 && (
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>🎉 आज के पर्व</Text>
+          {t.festivals.map((f, i) => (
+            <View key={f.key || i} style={styles.festRow}>
+              <Text style={styles.festName}>{f.name_hi}</Text>
+              <Text style={styles.festDesc}>{f.description_hi}</Text>
+            </View>
+          ))}
+        </View>
+      )}
+
+      {/* Flags */}
+      {(t.is_bhadra || t.is_panchak) && (
+        <View style={[styles.section, styles.flagsSection]}>
+          {t.is_bhadra && (
+            <Text style={styles.flagText}>⚠️ भद्रा काल सक्रिय — शुभ कार्य टालें</Text>
+          )}
+          {t.is_panchak && (
+            <Text style={styles.flagText}>⚠️ पंचक दोष — यात्रा / निर्माण से बचें</Text>
+          )}
+        </View>
+      )}
+
+      {/* Advanced toggle */}
+      <TouchableOpacity style={styles.advToggle} onPress={() => setShowAdvanced(!showAdvanced)}>
+        <Text style={styles.advToggleText}>
+          {showAdvanced ? '▲ उन्नत विवरण छिपाएँ' : '▼ उन्नत विवरण देखें'}
+        </Text>
+      </TouchableOpacity>
+
+      {showAdvanced && (
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>उन्नत विवरण</Text>
+          <View style={styles.advRow}>
+            <Text style={styles.advLabel}>मास</Text>
+            <Text style={styles.advValue}>{t.month_hi}</Text>
+          </View>
+          <View style={styles.advRow}>
+            <Text style={styles.advLabel}>पक्ष</Text>
+            <Text style={styles.advValue}>{t.paksha_hi}</Text>
+          </View>
+          <View style={styles.advRow}>
+            <Text style={styles.advLabel}>नक्षत्र स्वामी</Text>
+            <Text style={styles.advValue}>{t.nakshatra_lord || '-'}</Text>
+          </View>
+          <View style={styles.advRow}>
+            <Text style={styles.advLabel}>सौर दोपहर</Text>
+            <Text style={styles.advValue}>{t.solar_noon || '-'}</Text>
+          </View>
+          <View style={styles.advRow}>
+            <Text style={styles.advLabel}>प्रणाली</Text>
+            <Text style={styles.advValue}>{t.system === 'south' ? 'दक्षिण (अमान्त)' : 'उत्तर (पूर्णिमान्त)'}</Text>
+          </View>
+        </View>
+      )}
     </View>
   );
 }
@@ -129,4 +246,52 @@ const styles = StyleSheet.create({
   rowTitle: { fontSize: 14, fontWeight: '700', color: COLORS.text },
   rowMeta: { fontSize: 11, color: COLORS.textSecondary, marginTop: 2 },
   festivalEmoji: { fontSize: 30, marginRight: 12 },
+
+  // Hero
+  hero: {
+    backgroundColor: '#FEF0EC', borderRadius: 16, padding: 18,
+    borderWidth: 1, borderColor: '#FDDDD4', marginBottom: 16,
+  },
+  heroDate: { fontSize: 20, fontWeight: '800', color: COLORS.text },
+  heroDay: { fontSize: 13, color: COLORS.primary, fontWeight: '700', marginTop: 2 },
+  heroDivider: { height: 1, backgroundColor: '#FDDDD4', marginVertical: 12 },
+  heroMain: { fontSize: 14, color: COLORS.text, lineHeight: 22, fontWeight: '600' },
+  heroSunRow: { flexDirection: 'row', alignItems: 'center', marginTop: 14 },
+  heroSunSep: { width: 1, height: 28, backgroundColor: '#FDDDD4', marginHorizontal: 8 },
+  sunLabel: { fontSize: 10, color: COLORS.textSecondary, marginBottom: 2, textTransform: 'uppercase' },
+  sunValue: { fontSize: 15, fontWeight: '700', color: COLORS.text },
+
+  // Sections
+  section: { marginBottom: 14 },
+  sectionLabel: { fontSize: 11, fontWeight: '800', color: COLORS.textSecondary, textTransform: 'uppercase', marginBottom: 8, letterSpacing: 0.5 },
+  gridSub: { fontSize: 10, color: COLORS.primary, fontWeight: '600', marginTop: 2 },
+
+  // Muhurta rows
+  muhRow: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    backgroundColor: COLORS.surface, padding: 12, borderRadius: 10, marginBottom: 6,
+    borderWidth: 1, borderColor: COLORS.border,
+  },
+  muhName: { fontSize: 13, color: COLORS.text, fontWeight: '600' },
+  muhTime: { fontSize: 13, color: COLORS.primary, fontWeight: '700' },
+  muhNone: { fontSize: 12, color: COLORS.textSecondary, fontStyle: 'italic', paddingVertical: 6 },
+
+  // Festival rows
+  festRow: {
+    backgroundColor: '#ECFDF5', borderColor: '#86EFAC', borderWidth: 1,
+    borderRadius: 10, padding: 12, marginBottom: 6,
+  },
+  festName: { fontSize: 14, fontWeight: '800', color: '#064E3B' },
+  festDesc: { fontSize: 12, color: '#065F46', marginTop: 4, lineHeight: 18 },
+
+  // Flags
+  flagsSection: { backgroundColor: '#FEF3C7', borderColor: '#FDE047', borderWidth: 1, borderRadius: 10, padding: 12 },
+  flagText: { fontSize: 12, color: '#78350F', fontWeight: '600', paddingVertical: 2 },
+
+  // Advanced
+  advToggle: { alignItems: 'center', paddingVertical: 12 },
+  advToggleText: { color: COLORS.primary, fontSize: 12, fontWeight: '600' },
+  advRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  advLabel: { fontSize: 12, color: COLORS.textSecondary },
+  advValue: { fontSize: 12, color: COLORS.text, fontWeight: '600' },
 });

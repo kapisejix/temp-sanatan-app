@@ -1,0 +1,38 @@
+{
+  "summary": "Session 14 fully validated (Panchang v2, Festival Detection, Dharma Engine, DOCX bug fix). 18/18 backend pytest cases pass in 10.3s. Admin Import Wizard UI parses real-world /tmp/Chalisa.docx (6 MB, 621 paragraphs) end-to-end in ~2s, progresses to step 3 with 3 items / 129 verses (43+47+39) — matches backend payload exactly.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter15_panchang_dharma_docx.py",
+    "/app/test_reports/pytest/iter15_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py:/api/dharma/today (line 5407-5410): only tries get_current_admin for auth, then falls back to anonymous. Yet mobile-user Bearer tokens are accepted and personalization works — because get_current_admin validates generically. This works today but is coincidental; if get_current_admin later tightens role to admin-only, the mobile flow breaks silently. Suggest: try get_current_admin, on HTTPException try get_current_app_user, else anonymous. Non-blocking — verified personalization currently fires for mtest@ (rules_matched=2).",
+    "server.py:/api/panchang/day cache (line 5369-5388): cache_key rounds lat/lon to 2 decimals (good), but stores entire panchang doc under _id in db.panchang_cache with expires_at ISO string — there is no TTL index so expired entries linger forever. Add TTL index on expires_at or a cleanup job. Cache hit confirmed <500 ms (0.29s measured).",
+    "docx_parser.py is fully deterministic, no LLM dependency, parses 6 MB / 621 paragraphs / 3 chalisas in <3 s. Re-numbers verses linearly per item (verified: verse_num starts at 1 per item, monotonically increasing). Robust substitute for the old Claude-based parser that was timing out. Good.",
+    "festival_engine detect_festivals correctly fires rakshabandhan (shravan_shukla_purnima) AND purnima (shukla_purnima) together on 2026-07-29 — two overlapping rules returned as expected.",
+    "dharma_engine de-dup + priority sort + top_n=5 verified via test_dedup_and_sort (planets unique, priorities desc, ≤5 cards).",
+    "Abhijit Muhurta skip-Wednesday rule verified: 2026-01-07 (Wed) → null; 2026-11-08 (Sun) → '11:43 – 12:26'. Window ~43 min, within expected ~48 min band."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter15_panchang_dharma_docx.py (new, 18 test cases)"
+  ],
+  "success_rate": {
+    "backend": "100% (18/18)",
+    "frontend": "100% (Import Wizard end-to-end)"
+  },
+  "test_credentials": "Admin: admin@sanatansaathi.com / SanatanAdmin@2026. Mobile: mtest@sanatansaathi.com / Test@1234 (has kundli with Rahu MD; used for personalized dharma).",
+  "seed_data_creation": "None — tests reuse existing mtest@ user and its kundli. /tmp/Chalisa.docx downloaded from customer-assets CDN (6 MB) is cached in /tmp on test container.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Session 14 backend + Import Wizard admin UI = green. Reusable pytest at /app/backend/tests/test_iter15_panchang_dharma_docx.py covers Panchang v2 (fields, festivals, Abhijit, cache, system toggle), Dharma Engine (anon, personalized, card shape, dedup/sort), DOCX parser (unit + endpoint), and regression (mobile/admin login, yogas, kundli/my, audio endpoint). Mobile login returns JSON key 'token' (not 'access_token') — note for future tests. /api/panchang/day cache has no TTL index — call db.panchang_cache.deleteMany({}) to bust when testing month-name changes. Mobile Expo UI (HomeScreen dharma section, PanchangScreen Today tab) is React Native — cannot be Playwright-tested; needs Expo Go / emulator for manual verification.",
+  "rca of the issue": "N/A — DOCX bug was already fixed by E1 via docx_parser.py replacing the Claude LLM call. Verified: parse_docx_bytes on 6 MB Chalisa.docx returns 3 items / 129 verses with populated sanskrit_text+transliteration+meaning in <3s; import-wizard endpoint returns HTTP 200 in 2.75s end-to-end. Previous failure ('Parsing failed. Check file format.') was due to Claude timeout on a 621-paragraph document; deterministic heuristic (H1→collection, H2→item, H3→section, bold+devanagari→sanskrit, italic→transliteration, plain→meaning) handles arbitrary size."
+}

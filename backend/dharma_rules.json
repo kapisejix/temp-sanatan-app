@@ -1,0 +1,182 @@
+{
+  "planet_deity_mantra": {
+    "Sun": {
+      "graha_hi": "सूर्य",
+      "deity_hi": "सूर्य भगवान",
+      "mantra": "ॐ ह्रां ह्रीं ह्रौं सः सूर्याय नमः",
+      "count": 108,
+      "day_hi": "रविवार",
+      "color": "लाल",
+      "offering": "गुड़, गेहूँ, लाल पुष्प",
+      "actions": ["सूर्य नमस्कार 12 बार", "जल में गुड़ मिला कर अर्घ्य", "आदित्य हृदय स्तोत्र पाठ"]
+    },
+    "Moon": {
+      "graha_hi": "चन्द्र",
+      "deity_hi": "भगवान शिव",
+      "mantra": "ॐ सोमाय नमः",
+      "count": 108,
+      "day_hi": "सोमवार",
+      "color": "सफ़ेद",
+      "offering": "दूध, चावल, सफ़ेद पुष्प",
+      "actions": ["शिवलिंग पर जल अर्पण", "रुद्राष्टकम् पाठ", "सफ़ेद वस्त्र धारण"]
+    },
+    "Mars": {
+      "graha_hi": "मंगल",
+      "deity_hi": "हनुमान जी",
+      "mantra": "ॐ अं अंगारकाय नमः",
+      "count": 108,
+      "day_hi": "मंगलवार",
+      "color": "लाल",
+      "offering": "लाल पुष्प, गुड़, सिंदूर",
+      "actions": ["हनुमान चालीसा पाठ", "सुंदरकाण्ड पाठ", "लाल मसूर दान"]
+    },
+    "Mercury": {
+      "graha_hi": "बुध",
+      "deity_hi": "भगवान विष्णु",
+      "mantra": "ॐ बुं बुधाय नमः",
+      "count": 108,
+      "day_hi": "बुधवार",
+      "color": "हरा",
+      "offering": "हरी मूंग, तुलसी पत्र",
+      "actions": ["विष्णु सहस्रनाम", "गणेश जी को दूर्वा अर्पण", "हरी सब्ज़ी दान"]
+    },
+    "Jupiter": {
+      "graha_hi": "गुरु",
+      "deity_hi": "बृहस्पति / भगवान विष्णु",
+      "mantra": "ॐ बृं बृहस्पतये नमः",
+      "count": 108,
+      "day_hi": "गुरुवार",
+      "color": "पीला",
+      "offering": "चना दाल, केला, पीले पुष्प",
+      "actions": ["विष्णु सहस्रनाम", "पीपल वृक्ष की परिक्रमा", "पीली वस्तु दान"]
+    },
+    "Venus": {
+      "graha_hi": "शुक्र",
+      "deity_hi": "माँ लक्ष्मी",
+      "mantra": "ॐ शुं शुक्राय नमः",
+      "count": 108,
+      "day_hi": "शुक्रवार",
+      "color": "सफ़ेद",
+      "offering": "खीर, सफ़ेद पुष्प, इत्र",
+      "actions": ["श्री सूक्त पाठ", "कन्या पूजन", "सफ़ेद वस्त्र व इत्र दान"]
+    },
+    "Saturn": {
+      "graha_hi": "शनि",
+      "deity_hi": "शनि देव / भैरव जी",
+      "mantra": "ॐ शं शनैश्चराय नमः",
+      "count": 108,
+      "day_hi": "शनिवार",
+      "color": "काला / नीला",
+      "offering": "तेल का दीपक, काले तिल, उड़द",
+      "actions": ["पीपल वृक्ष पर तेल दीपक", "काले तिल दान", "शनि चालीसा पाठ", "हनुमान जी की पूजा"]
+    },
+    "Rahu": {
+      "graha_hi": "राहु",
+      "deity_hi": "माँ दुर्गा / भैरव जी",
+      "mantra": "ॐ रां राहवे नमः",
+      "count": 108,
+      "day_hi": "शनिवार",
+      "color": "नीला",
+      "offering": "नारियल, सरसों का तेल",
+      "actions": ["दुर्गा सप्तशती पाठ", "नारियल दान", "भिखारी को अन्न दान"]
+    },
+    "Ketu": {
+      "graha_hi": "केतु",
+      "deity_hi": "गणेश जी",
+      "mantra": "ॐ कें केतवे नमः",
+      "count": 108,
+      "day_hi": "मंगलवार",
+      "color": "धूसर",
+      "offering": "तिल, कम्बल",
+      "actions": ["गणेश अथर्वशीर्ष पाठ", "कुत्ते को भोजन", "तिल-तेल दान"]
+    }
+  },
+
+  "rules": [
+    {"id": "r_sun_sunday", "priority": 12, "conditions": {"weekday": 6, "focus_planet": "Sun"}, "reason_hi": "रविवार — सूर्य का दिन"},
+    {"id": "r_moon_monday", "priority": 12, "conditions": {"weekday": 0, "focus_planet": "Moon"}, "reason_hi": "सोमवार — चन्द्र / शिव का दिन"},
+    {"id": "r_mars_tuesday", "priority": 12, "conditions": {"weekday": 1, "focus_planet": "Mars"}, "reason_hi": "मंगलवार — हनुमान जी का दिन"},
+    {"id": "r_mercury_wed", "priority": 12, "conditions": {"weekday": 2, "focus_planet": "Mercury"}, "reason_hi": "बुधवार — बुध और गणेश जी का दिन"},
+    {"id": "r_jupiter_thu", "priority": 12, "conditions": {"weekday": 3, "focus_planet": "Jupiter"}, "reason_hi": "गुरुवार — बृहस्पति / विष्णु का दिन"},
+    {"id": "r_venus_fri", "priority": 12, "conditions": {"weekday": 4, "focus_planet": "Venus"}, "reason_hi": "शुक्रवार — माँ लक्ष्मी का दिन"},
+    {"id": "r_saturn_sat", "priority": 12, "conditions": {"weekday": 5, "focus_planet": "Saturn"}, "reason_hi": "शनिवार — शनि देव का दिन"},
+
+    {"id": "r_weak_sun_plus_sunday", "priority": 20, "conditions": {"weekday": 6, "weak_planet": "Sun"}, "focus_planet": "Sun", "reason_hi": "आपका सूर्य कमजोर + रविवार — विशेष सूर्य उपाय का दिन"},
+    {"id": "r_weak_moon_plus_monday", "priority": 20, "conditions": {"weekday": 0, "weak_planet": "Moon"}, "focus_planet": "Moon", "reason_hi": "आपका चन्द्र कमजोर + सोमवार — विशेष शिव/चन्द्र उपाय"},
+    {"id": "r_weak_mars_plus_tuesday", "priority": 20, "conditions": {"weekday": 1, "weak_planet": "Mars"}, "focus_planet": "Mars", "reason_hi": "मंगल कमजोर + मंगलवार — हनुमान चालीसा पाठ अत्यन्त लाभकारी"},
+    {"id": "r_weak_mercury_plus_wed", "priority": 20, "conditions": {"weekday": 2, "weak_planet": "Mercury"}, "focus_planet": "Mercury", "reason_hi": "बुध कमजोर + बुधवार — विशेष उपाय का दिन"},
+    {"id": "r_weak_jupiter_plus_thu", "priority": 20, "conditions": {"weekday": 3, "weak_planet": "Jupiter"}, "focus_planet": "Jupiter", "reason_hi": "गुरु कमजोर + गुरुवार — विष्णु सहस्रनाम पाठ"},
+    {"id": "r_weak_venus_plus_fri", "priority": 20, "conditions": {"weekday": 4, "weak_planet": "Venus"}, "focus_planet": "Venus", "reason_hi": "शुक्र कमजोर + शुक्रवार — लक्ष्मी पूजन का विशेष दिन"},
+    {"id": "r_weak_saturn_plus_sat", "priority": 25, "conditions": {"weekday": 5, "weak_planet": "Saturn"}, "focus_planet": "Saturn", "reason_hi": "शनि कमजोर + शनिवार — अत्यन्त शुभ शनि उपाय दिवस"},
+    {"id": "r_weak_rahu_sat", "priority": 20, "conditions": {"weekday": 5, "weak_planet": "Rahu"}, "focus_planet": "Rahu", "reason_hi": "राहु उपाय — शनिवार को दुर्गा पाठ"},
+    {"id": "r_weak_ketu_tue", "priority": 20, "conditions": {"weekday": 1, "weak_planet": "Ketu"}, "focus_planet": "Ketu", "reason_hi": "केतु उपाय — मंगलवार को गणेश पूजन"},
+
+    {"id": "r_dasha_sun", "priority": 18, "conditions": {"mahadasha": "Sun"}, "focus_planet": "Sun", "reason_hi": "सूर्य महादशा चल रही है"},
+    {"id": "r_dasha_moon", "priority": 18, "conditions": {"mahadasha": "Moon"}, "focus_planet": "Moon", "reason_hi": "चन्द्र महादशा चल रही है"},
+    {"id": "r_dasha_mars", "priority": 18, "conditions": {"mahadasha": "Mars"}, "focus_planet": "Mars", "reason_hi": "मंगल महादशा चल रही है"},
+    {"id": "r_dasha_mercury", "priority": 18, "conditions": {"mahadasha": "Mercury"}, "focus_planet": "Mercury", "reason_hi": "बुध महादशा चल रही है"},
+    {"id": "r_dasha_jupiter", "priority": 18, "conditions": {"mahadasha": "Jupiter"}, "focus_planet": "Jupiter", "reason_hi": "गुरु महादशा चल रही है"},
+    {"id": "r_dasha_venus", "priority": 18, "conditions": {"mahadasha": "Venus"}, "focus_planet": "Venus", "reason_hi": "शुक्र महादशा चल रही है"},
+    {"id": "r_dasha_saturn", "priority": 22, "conditions": {"mahadasha": "Saturn"}, "focus_planet": "Saturn", "reason_hi": "शनि महादशा चल रही है — नियमित शनि उपाय करें"},
+    {"id": "r_dasha_rahu", "priority": 22, "conditions": {"mahadasha": "Rahu"}, "focus_planet": "Rahu", "reason_hi": "राहु महादशा — दुर्गा पूजन व दान ज़रूरी"},
+    {"id": "r_dasha_ketu", "priority": 22, "conditions": {"mahadasha": "Ketu"}, "focus_planet": "Ketu", "reason_hi": "केतु महादशा — गणेश पूजन अनिवार्य"},
+
+    {"id": "r_dasha_sat_plus_sat", "priority": 30, "conditions": {"mahadasha": "Saturn", "weekday": 5}, "focus_planet": "Saturn", "reason_hi": "शनि महादशा + शनिवार — सबसे शक्तिशाली शनि उपाय दिवस"},
+    {"id": "r_dasha_sun_plus_sun", "priority": 28, "conditions": {"mahadasha": "Sun", "weekday": 6}, "focus_planet": "Sun", "reason_hi": "सूर्य महादशा + रविवार — आदित्य हृदय स्तोत्र पाठ"},
+    {"id": "r_dasha_moon_plus_mon", "priority": 28, "conditions": {"mahadasha": "Moon", "weekday": 0}, "focus_planet": "Moon", "reason_hi": "चन्द्र महादशा + सोमवार — रुद्राभिषेक का शुभ दिन"},
+    {"id": "r_dasha_mars_plus_tue", "priority": 28, "conditions": {"mahadasha": "Mars", "weekday": 1}, "focus_planet": "Mars", "reason_hi": "मंगल महादशा + मंगलवार — सुंदरकाण्ड पाठ"},
+    {"id": "r_dasha_jup_plus_thu", "priority": 28, "conditions": {"mahadasha": "Jupiter", "weekday": 3}, "focus_planet": "Jupiter", "reason_hi": "गुरु महादशा + गुरुवार — विष्णु पूजन"},
+    {"id": "r_dasha_ven_plus_fri", "priority": 28, "conditions": {"mahadasha": "Venus", "weekday": 4}, "focus_planet": "Venus", "reason_hi": "शुक्र महादशा + शुक्रवार — लक्ष्मी पूजन"},
+
+    {"id": "r_ekadashi", "priority": 35, "conditions": {"tithi_in_paksha": 10}, "focus_planet": "Jupiter", "reason_hi": "एकादशी तिथि — भगवान विष्णु का व्रत"},
+    {"id": "r_amavasya", "priority": 28, "conditions": {"tithi_index": 29}, "focus_planet": "Saturn", "reason_hi": "अमावस्या — पितृ तर्पण, शनि / राहु उपाय दिवस"},
+    {"id": "r_purnima", "priority": 28, "conditions": {"tithi_index": 14}, "focus_planet": "Moon", "reason_hi": "पूर्णिमा — सत्यनारायण व्रत का शुभ दिन"},
+    {"id": "r_sankashti", "priority": 30, "conditions": {"tithi_index": 18}, "focus_planet": "Ketu", "reason_hi": "संकष्टी चतुर्थी — गणेश पूजन दिवस"},
+    {"id": "r_chaturthi_shukla", "priority": 22, "conditions": {"tithi_index": 3}, "focus_planet": "Ketu", "reason_hi": "विनायक चतुर्थी — गणेश पूजन"},
+    {"id": "r_pradosh", "priority": 28, "conditions": {"tithi_in_paksha": 12}, "focus_planet": "Moon", "reason_hi": "प्रदोष व्रत — शिवजी की संध्याकालीन पूजा"},
+    {"id": "r_trayodashi_krishna", "priority": 25, "conditions": {"tithi_index": 27}, "focus_planet": "Moon", "reason_hi": "कृष्ण त्रयोदशी — शिव उपाय"},
+    {"id": "r_ashtami_shukla", "priority": 20, "conditions": {"tithi_index": 7}, "focus_planet": "Mars", "reason_hi": "शुक्ल अष्टमी — दुर्गा पूजन"},
+    {"id": "r_shivratri_masik", "priority": 32, "conditions": {"tithi_index": 28}, "focus_planet": "Moon", "reason_hi": "मासिक शिवरात्रि — रात्रि जागरण व अभिषेक"},
+
+    {"id": "r_nak_pushya", "priority": 25, "conditions": {"nakshatra_index": 7}, "focus_planet": "Jupiter", "reason_hi": "पुष्य नक्षत्र — सर्वश्रेष्ठ मुहूर्त, स्वर्ण क्रय शुभ"},
+    {"id": "r_nak_rohini", "priority": 22, "conditions": {"nakshatra_index": 3}, "focus_planet": "Moon", "reason_hi": "रोहिणी नक्षत्र — शुभ कार्य हेतु उत्तम"},
+    {"id": "r_nak_revati", "priority": 20, "conditions": {"nakshatra_index": 26}, "focus_planet": "Mercury", "reason_hi": "रेवती नक्षत्र — यात्रा व व्यापार शुभ"},
+    {"id": "r_nak_ashwini", "priority": 20, "conditions": {"nakshatra_index": 0}, "focus_planet": "Ketu", "reason_hi": "अश्विनी नक्षत्र — स्वास्थ्य उपाय दिन"},
+    {"id": "r_nak_shravana", "priority": 22, "conditions": {"nakshatra_index": 21}, "focus_planet": "Moon", "reason_hi": "श्रवण नक्षत्र — विष्णु पूजन विशेष"},
+    {"id": "r_nak_magha", "priority": 22, "conditions": {"nakshatra_index": 9}, "focus_planet": "Ketu", "reason_hi": "मघा नक्षत्र — पितृ तर्पण हेतु उत्तम"},
+    {"id": "r_nak_mrigasira", "priority": 20, "conditions": {"nakshatra_index": 4}, "focus_planet": "Mars", "reason_hi": "मृगशिरा नक्षत्र — यात्रा शुभ"},
+    {"id": "r_nak_ardra", "priority": 18, "conditions": {"nakshatra_index": 5}, "focus_planet": "Rahu", "reason_hi": "आर्द्रा नक्षत्र — रुद्राभिषेक हेतु उत्तम"},
+    {"id": "r_nak_chitra", "priority": 18, "conditions": {"nakshatra_index": 13}, "focus_planet": "Mars", "reason_hi": "चित्रा नक्षत्र — कला व सौन्दर्य कार्यों हेतु शुभ"},
+    {"id": "r_nak_hasta", "priority": 20, "conditions": {"nakshatra_index": 12}, "focus_planet": "Moon", "reason_hi": "हस्त नक्षत्र — चन्द्र-संबंधी उपाय शुभ"},
+
+    {"id": "r_bhadra_caution", "priority": 40, "conditions": {"is_bhadra": true}, "focus_planet": "Saturn", "reason_hi": "भद्रा काल — नए कार्य प्रारम्भ न करें; शनि उपाय करें"},
+    {"id": "r_panchak_caution", "priority": 40, "conditions": {"is_panchak": true}, "focus_planet": "Saturn", "reason_hi": "पंचक दोष — यात्रा व निर्माण कार्य से बचें, शनि उपाय"},
+
+    {"id": "r_yoga_siddhi", "priority": 15, "conditions": {"yoga_index": 15}, "focus_planet": "Jupiter", "reason_hi": "सिद्धि योग — किसी भी शुभ कार्य के लिए उत्तम"},
+    {"id": "r_yoga_amrit", "priority": 18, "conditions": {"yoga_index": 2}, "focus_planet": "Jupiter", "reason_hi": "आयुष्मान योग — स्वास्थ्य व दीर्घायु हेतु शुभ"},
+    {"id": "r_yoga_shubha", "priority": 15, "conditions": {"yoga_index": 22}, "focus_planet": "Jupiter", "reason_hi": "शुभ योग — सभी शुभ कार्यों हेतु उत्तम"},
+
+    {"id": "r_saturn_weak_anyday", "priority": 10, "conditions": {"weak_planet": "Saturn"}, "focus_planet": "Saturn", "reason_hi": "आपका शनि कमजोर — नित्य उपाय से लाभ"},
+    {"id": "r_rahu_weak_anyday", "priority": 10, "conditions": {"weak_planet": "Rahu"}, "focus_planet": "Rahu", "reason_hi": "राहु कमजोर — नारियल दान व दुर्गा पाठ"},
+    {"id": "r_ketu_weak_anyday", "priority": 10, "conditions": {"weak_planet": "Ketu"}, "focus_planet": "Ketu", "reason_hi": "केतु कमजोर — गणेश पूजन नित्य करें"},
+    {"id": "r_sun_weak_anyday", "priority": 8, "conditions": {"weak_planet": "Sun"}, "focus_planet": "Sun", "reason_hi": "सूर्य कमजोर — प्रातः सूर्य अर्घ्य"},
+    {"id": "r_moon_weak_anyday", "priority": 8, "conditions": {"weak_planet": "Moon"}, "focus_planet": "Moon", "reason_hi": "चन्द्र कमजोर — सोमवार व्रत रखें"},
+    {"id": "r_mars_weak_anyday", "priority": 8, "conditions": {"weak_planet": "Mars"}, "focus_planet": "Mars", "reason_hi": "मंगल कमजोर — हनुमान चालीसा पाठ"},
+    {"id": "r_mercury_weak_anyday", "priority": 8, "conditions": {"weak_planet": "Mercury"}, "focus_planet": "Mercury", "reason_hi": "बुध कमजोर — विष्णु पूजन"},
+    {"id": "r_jupiter_weak_anyday", "priority": 8, "conditions": {"weak_planet": "Jupiter"}, "focus_planet": "Jupiter", "reason_hi": "गुरु कमजोर — गुरुवार व्रत व विष्णु सहस्रनाम"},
+    {"id": "r_venus_weak_anyday", "priority": 8, "conditions": {"weak_planet": "Venus"}, "focus_planet": "Venus", "reason_hi": "शुक्र कमजोर — लक्ष्मी पूजन"},
+
+    {"id": "r_ad_sun", "priority": 12, "conditions": {"antardasha": "Sun"}, "focus_planet": "Sun", "reason_hi": "सूर्य अंतर्दशा — आत्मविश्वास हेतु सूर्य उपाय"},
+    {"id": "r_ad_saturn", "priority": 15, "conditions": {"antardasha": "Saturn"}, "focus_planet": "Saturn", "reason_hi": "शनि अंतर्दशा — तेल दीपक व काले तिल दान"},
+    {"id": "r_ad_rahu", "priority": 15, "conditions": {"antardasha": "Rahu"}, "focus_planet": "Rahu", "reason_hi": "राहु अंतर्दशा — दुर्गा पूजन"},
+    {"id": "r_ad_ketu", "priority": 15, "conditions": {"antardasha": "Ketu"}, "focus_planet": "Ketu", "reason_hi": "केतु अंतर्दशा — गणेश पूजन"},
+
+    {"id": "r_festival_ekadashi_major", "priority": 45, "conditions": {"has_festival_key": "ekadashi_shukla"}, "focus_planet": "Jupiter", "reason_hi": "विशेष एकादशी व्रत — विष्णु सहस्रनाम पाठ"},
+    {"id": "r_festival_krishna_ekadashi", "priority": 45, "conditions": {"has_festival_key": "ekadashi_krishna"}, "focus_planet": "Jupiter", "reason_hi": "कृष्ण पक्ष एकादशी — निर्जला उपवास"},
+    {"id": "r_festival_shivratri", "priority": 50, "conditions": {"has_festival_key": "mahashivratri"}, "focus_planet": "Moon", "reason_hi": "महाशिवरात्रि — रात्रि जागरण व अभिषेक"},
+    {"id": "r_festival_diwali", "priority": 50, "conditions": {"has_festival_key": "diwali"}, "focus_planet": "Venus", "reason_hi": "दीपावली — लक्ष्मी-कुबेर पूजन"},
+    {"id": "r_festival_navratri", "priority": 45, "conditions": {"has_festival_key": "navratri_start"}, "focus_planet": "Mars", "reason_hi": "शारदीय नवरात्रि — दुर्गा सप्तशती पाठ"},
+    {"id": "r_festival_janmashtami", "priority": 45, "conditions": {"has_festival_key": "janmashtami"}, "focus_planet": "Mercury", "reason_hi": "जन्माष्टमी — कृष्ण जन्मोत्सव"},
+    {"id": "r_festival_ganesh_chaturthi", "priority": 40, "conditions": {"has_festival_key": "ganesh_chaturthi"}, "focus_planet": "Ketu", "reason_hi": "गणेश चतुर्थी — गणपति स्थापना"}
+  ]
+}

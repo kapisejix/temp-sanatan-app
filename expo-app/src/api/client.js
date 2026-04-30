@@ -96,7 +96,23 @@ client.interceptors.response.use(
 // ---- Public API methods ----
 export const api = {
   // Public (no auth)
-  getPanchangToday: () => axios.get(`${API_BASE_URL}/mobile/panchang/today`).then(r => r.data),
+  getPanchangToday: (lat = null, lon = null, tz = null) => {
+    const params = new URLSearchParams();
+    if (lat != null) params.append('lat', lat);
+    if (lon != null) params.append('lon', lon);
+    if (tz)  params.append('tz', tz);
+    const qs = params.toString();
+    return axios.get(`${API_BASE_URL}/mobile/panchang/today${qs ? '?' + qs : ''}`).then(r => r.data);
+  },
+  getPanchangDay: ({ lat = 28.6139, lon = 77.2090, tz = 'Asia/Kolkata', date = null, system = 'north' } = {}) => {
+    const params = new URLSearchParams({ lat, lon, tz, system });
+    if (date) params.append('date', date);
+    return axios.get(`${API_BASE_URL}/panchang/day?${params}`).then(r => r.data);
+  },
+  getDharmaToday: ({ lat = 28.6139, lon = 77.2090, tz = 'Asia/Kolkata', system = 'north' } = {}) => {
+    const params = new URLSearchParams({ lat, lon, tz, system });
+    return client.get(`/dharma/today?${params}`).then(r => r.data);
+  },
   getMantraOfDay: () => axios.get(`${API_BASE_URL}/mobile/mantra-of-day`).then(r => r.data),
   // Content (no auth)
   listGranthBooks: () => axios.get(`${API_BASE_URL}/granth/books`).then(r => r.data),

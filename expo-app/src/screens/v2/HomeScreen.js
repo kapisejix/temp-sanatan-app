@@ -147,6 +147,7 @@ export default function HomeScreen({ navigation }) {
   const mantraDay = useApiData(api.getMantraOfDay, TODAY_UPAYA, []);
   const panchang = useApiData(api.getPanchangToday, TODAY_PANCHANG, []);
   const insights = useApiData(api.getInsightsToday, null, []);
+  const dharma = useApiData(() => api.getDharmaToday({}), null, []);
 
   // Build upaya: prefer kundli's top recommendation, else day-based mantra
   const upaya = (() => {
@@ -210,6 +211,62 @@ export default function HomeScreen({ navigation }) {
         {whyModal && (
           <View style={styles.whyBox}>
             <Text style={styles.whyText}>{upayaWhy}</Text>
+          </View>
+        )}
+
+        {/* Personalized Dharma Guidance — rule-based cards */}
+        {dharma.data && dharma.data.cards?.length > 0 && (
+          <View style={styles.dharmaSection}>
+            <View style={styles.dharmaHeader}>
+              <Text style={styles.dharmaTitle}>🧠 आज का व्यक्तिगत मार्गदर्शन</Text>
+              <Text style={styles.dharmaSub}>
+                {dharma.data.is_personalized
+                  ? `कुंडली + पंचांग के आधार पर · ${dharma.data.rules_matched} नियम सक्रिय`
+                  : `पंचांग आधारित · कुंडली बनाएं पूर्ण मार्गदर्शन हेतु`}
+              </Text>
+            </View>
+            {dharma.data.cards.map((c, i) => (
+              <View key={c.rule_id || i} style={[styles.dharmaCard, i === 0 && styles.dharmaCardTop]}>
+                <View style={styles.dharmaCardHeader}>
+                  <Text style={styles.dharmaCardBullet}>{i === 0 ? '🔴' : i === 1 ? '🟠' : '🟡'}</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.dharmaCardPlanet}>
+                      {c.focus_planet_hi} → {c.deity_hi}
+                    </Text>
+                    <Text style={styles.dharmaCardReason}>{c.reason_hi}</Text>
+                  </View>
+                  <View style={styles.dharmaPriority}>
+                    <Text style={styles.dharmaPriorityText}>{c.priority}</Text>
+                  </View>
+                </View>
+                <View style={styles.dharmaMantraBox}>
+                  <Text style={styles.dharmaMantra}>{c.mantra}</Text>
+                  <Text style={styles.dharmaMantraMeta}>जप: {c.chant_count}× · दिन: {c.day_hi}</Text>
+                </View>
+                {c.actions?.length > 0 && (
+                  <View style={styles.dharmaActions}>
+                    {c.actions.slice(0, 3).map((a, j) => (
+                      <Text key={j} style={styles.dharmaAction}>• {a}</Text>
+                    ))}
+                  </View>
+                )}
+              </View>
+            ))}
+            {dharma.data.summary?.festivals?.length > 0 && (
+              <View style={styles.festivalBanner}>
+                <Text style={styles.festivalLabel}>🎉 आज का पर्व</Text>
+                <Text style={styles.festivalText}>{dharma.data.summary.festivals.join(' · ')}</Text>
+              </View>
+            )}
+            {(dharma.data.summary?.flags?.is_bhadra || dharma.data.summary?.flags?.is_panchak) && (
+              <View style={styles.warnBanner}>
+                <Text style={styles.warnLabel}>⚠️ सावधानी</Text>
+                <Text style={styles.warnText}>
+                  {dharma.data.summary.flags.is_bhadra && 'भद्रा काल सक्रिय — नए कार्य न करें। '}
+                  {dharma.data.summary.flags.is_panchak && 'पंचक दोष — यात्रा व निर्माण टालें।'}
+                </Text>
+              </View>
+            )}
           </View>
         )}
 
@@ -283,4 +340,49 @@ const styles = StyleSheet.create({
   trendingPlayIcon: { color: '#FFF', fontSize: 13 },
   trendingTitle: { fontSize: 14, fontWeight: '600', color: COLORS.text },
   trendingMeta: { fontSize: 11, color: COLORS.textSecondary, marginTop: 2 },
+
+  // Dharma Engine cards
+  dharmaSection: { marginTop: 16 },
+  dharmaHeader: { marginBottom: 10 },
+  dharmaTitle: { fontSize: 15, fontWeight: '800', color: COLORS.text },
+  dharmaSub: { fontSize: 11, color: COLORS.textSecondary, marginTop: 2 },
+  dharmaCard: {
+    backgroundColor: COLORS.surface, borderRadius: 14, padding: 14, marginBottom: 10,
+    borderWidth: 1, borderColor: COLORS.border,
+  },
+  dharmaCardTop: {
+    borderColor: '#E95A34', borderWidth: 2,
+    backgroundColor: '#FEF5F1',
+  },
+  dharmaCardHeader: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 8 },
+  dharmaCardBullet: { fontSize: 16, marginRight: 8, marginTop: 2 },
+  dharmaCardPlanet: { fontSize: 15, fontWeight: '800', color: COLORS.text },
+  dharmaCardReason: { fontSize: 11, color: COLORS.textSecondary, marginTop: 3, lineHeight: 16 },
+  dharmaPriority: {
+    backgroundColor: '#FFF', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3,
+    borderWidth: 1, borderColor: COLORS.border, marginLeft: 6,
+  },
+  dharmaPriorityText: { fontSize: 11, fontWeight: '700', color: COLORS.primary },
+  dharmaMantraBox: {
+    backgroundColor: '#FFF', borderLeftWidth: 3, borderLeftColor: COLORS.primary,
+    paddingHorizontal: 10, paddingVertical: 8, borderRadius: 6, marginVertical: 4,
+  },
+  dharmaMantra: { fontSize: 14, fontWeight: '600', color: COLORS.text, lineHeight: 20 },
+  dharmaMantraMeta: { fontSize: 10, color: COLORS.textSecondary, marginTop: 3 },
+  dharmaActions: { marginTop: 6 },
+  dharmaAction: { fontSize: 12, color: COLORS.text, paddingVertical: 2 },
+
+  festivalBanner: {
+    backgroundColor: '#ECFDF5', borderColor: '#86EFAC', borderWidth: 1,
+    borderRadius: 10, padding: 10, marginTop: 4,
+  },
+  festivalLabel: { fontSize: 11, fontWeight: '800', color: '#065F46' },
+  festivalText: { fontSize: 13, color: '#064E3B', marginTop: 2, fontWeight: '600' },
+
+  warnBanner: {
+    backgroundColor: '#FEF3C7', borderColor: '#FDE047', borderWidth: 1,
+    borderRadius: 10, padding: 10, marginTop: 8,
+  },
+  warnLabel: { fontSize: 11, fontWeight: '800', color: '#92400E' },
+  warnText: { fontSize: 12, color: '#78350F', marginTop: 2 },
 });

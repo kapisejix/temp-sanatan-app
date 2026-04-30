@@ -4030,40 +4030,50 @@ async def import_wizard(
                 items.append(item)
 
         elif fname.endswith((".docx", ".doc")):
-            import io as io_mod
-            from docx import Document
-            doc = Document(io_mod.BytesIO(content_bytes))
-            raw_text = ""
-            for para in doc.paragraphs:
-                style = para.style.name if para.style else "Normal"
-                text = para.text
-                if not text.strip():
-                    raw_text += "\n"
-                    continue
-                is_bold = any(run.bold for run in para.runs if run.bold)
-                is_italic = any(run.italic for run in para.runs if run.italic)
-                devanagari_chars = sum(1 for c in text if '\u0900' <= c <= '\u097F')
-                has_devanagari = devanagari_chars > len(text.strip()) * 0.3
-                if "Heading 1" in style:
-                    raw_text += f"\n[H1] {text}\n"
-                elif "Heading 2" in style:
-                    raw_text += f"\n[H2] {text}\n"
-                elif "Heading 3" in style:
-                    raw_text += f"\n[H3] {text}\n"
-                elif is_bold and has_devanagari:
-                    raw_text += f"[SANSKRIT] {text}\n"
-                elif is_bold:
-                    raw_text += f"[BOLD] {text}\n"
-                elif is_italic:
-                    raw_text += f"[TRANSLIT] {text}\n"
-                else:
-                    raw_text += f"{text}\n"
+            # Primary path: deterministic local parser (fast, no LLM, handles any size)
+            from docx_parser import parse_docx_bytes
+            try:
+                items = parse_docx_bytes(content_bytes)
+            except Exception as parse_err:
+                logger.warning(f"DOCX deterministic parser failed: {parse_err}")
+                items = []
 
-            from emergentintegrations.llm.chat import LlmChat, UserMessage
-            chat = LlmChat(
-                api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
-                session_id=f"import-{upload_id}",
-                system_message=f"""You are a Hindu scripture content parser. Parse the uploaded text into structured JSON.
+            # Fallback: only call Claude if heuristic returned nothing usable
+            if not items:
+                import io as io_mod
+                from docx import Document
+                doc = Document(io_mod.BytesIO(content_bytes))
+                raw_text = ""
+                for para in doc.paragraphs:
+                    style = para.style.name if para.style else "Normal"
+                    text = para.text
+                    if not text.strip():
+                        raw_text += "\n"
+                        continue
+                    is_bold = any(run.bold for run in para.runs if run.bold)
+                    is_italic = any(run.italic for run in para.runs if run.italic)
+                    devanagari_chars = sum(1 for c in text if '\u0900' <= c <= '\u097F')
+                    has_devanagari = devanagari_chars > len(text.strip()) * 0.3
+                    if "Heading 1" in style:
+                        raw_text += f"\n[H1] {text}\n"
+                    elif "Heading 2" in style:
+                        raw_text += f"\n[H2] {text}\n"
+                    elif "Heading 3" in style:
+                        raw_text += f"\n[H3] {text}\n"
+                    elif is_bold and has_devanagari:
+                        raw_text += f"[SANSKRIT] {text}\n"
+                    elif is_bold:
+                        raw_text += f"[BOLD] {text}\n"
+                    elif is_italic:
+                        raw_text += f"[TRANSLIT] {text}\n"
+                    else:
+                        raw_text += f"{text}\n"
+
+                from emergentintegrations.llm.chat import LlmChat, UserMessage
+                chat = LlmChat(
+                    api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
+                    session_id=f"import-{upload_id}",
+                    system_message=f"""You are a Hindu scripture content parser. Parse the uploaded text into structured JSON.
 Rules:
 - [H1] = Category name
 - [H2] = Item title
@@ -4082,17 +4092,17 @@ Return ONLY valid JSON array:
     "transliteration": "roman text",
     "meaning": "meaning in {language}"}}]
 }}]""",
-            )
-            chat.with_model("anthropic", "claude-sonnet-4-5-20250929")
-            ai_resp = await chat.send_message(UserMessage(text=f"Parse for category '{category}', language '{language}':\n\n{raw_text}"))
-            json_str = ai_resp
-            if "```json" in json_str:
-                json_str = json_str.split("```json")[1].split("```")[0]
-            elif "```" in json_str:
-                json_str = json_str.split("```")[1].split("```")[0]
-            items = json_mod.loads(json_str.strip())
-            if not isinstance(items, list):
-                items = [items]
+                )
+                chat.with_model("anthropic", "claude-sonnet-4-5-20250929")
+                ai_resp = await chat.send_message(UserMessage(text=f"Parse for category '{category}', language '{language}':\n\n{raw_text}"))
+                json_str = ai_resp
+                if "```json" in json_str:
+                    json_str = json_str.split("```json")[1].split("```")[0]
+                elif "```" in json_str:
+                    json_str = json_str.split("```")[1].split("```")[0]
+                items = json_mod.loads(json_str.strip())
+                if not isinstance(items, list):
+                    items = [items]
         else:
             raise HTTPException(status_code=400, detail="Unsupported file format. Use .csv, .json, or .docx")
 
@@ -5338,6 +5348,81 @@ async def admin_supported_languages(
     admin: dict = Depends(require_role(["super_admin", "content_admin"]))
 ):
     return {"languages": [{"code": k, "name": v} for k, v in _SUPPORTED_LANG_NAMES.items()]}
+
+
+# ===================== PANCHANG v2 + DHARMA ENGINE =====================
+from panchang_engine import compute_panchang as _compute_panchang
+from festival_engine import detect_festivals as _detect_festivals
+from dharma_engine import build_dharma_guidance as _build_dharma
+
+
+@api_router.get("/panchang/day")
+async def api_panchang_day(
+    lat: float = 28.6139,
+    lon: float = 77.2090,
+    tz: str = "Asia/Kolkata",
+    date: Optional[str] = None,          # YYYY-MM-DD
+    system: str = "north",               # "north" | "south"
+):
+    """Public — comprehensive Panchang for a location + date.
+    Caches per (date, lat-rounded, lon-rounded, system)."""
+    cache_key = f"{date or 'today'}:{round(lat, 2)}:{round(lon, 2)}:{tz}:{system}"
+    cached = await db.panchang_cache.find_one({"_id": cache_key})
+    if cached and cached.get("expires_at") and \
+       datetime.fromisoformat(cached["expires_at"]) > datetime.now(timezone.utc):
+        cached.pop("_id", None); cached.pop("expires_at", None)
+        return cached
+    try:
+        p = _compute_panchang(lat=lat, lon=lon, tz_name=tz, for_date=date, system=system)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Panchang calc failed: {e}")
+    p["festivals"] = _detect_festivals(p)
+    # Cache for 12h
+    try:
+        await db.panchang_cache.update_one(
+            {"_id": cache_key},
+            {"$set": {**p, "expires_at": (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat()}},
+            upsert=True,
+        )
+    except Exception:
+        pass  # non-fatal
+    return p
+
+
+@api_router.get("/dharma/today")
+async def api_dharma_today(
+    request: Request,
+    lat: float = 28.6139,
+    lon: float = 77.2090,
+    tz: str = "Asia/Kolkata",
+    system: str = "north",
+):
+    """Personalized daily dharma guidance.
+
+    - If caller is authenticated (admin or mobile user), pulls their kundli
+      for personalised rules (weak planets + current Mahadasha).
+    - Works anonymously too (returns panchang-only rules).
+    """
+    user = None
+    try:
+        user = await get_current_admin(request)
+    except HTTPException:
+        user = None  # anonymous call
+
+    panchang = _compute_panchang(lat=lat, lon=lon, tz_name=tz, system=system)
+    festivals = _detect_festivals(panchang)
+
+    kundli = None
+    if user:
+        kundli = await _load_user_kundli(user["_id"])
+
+    guidance = _build_dharma(panchang, kundli, festivals, top_n=5)
+    return {
+        "panchang": panchang,
+        "festivals": festivals,
+        **guidance,
+        "user_id": user["_id"] if user else None,
+    }
 
 
 # ===================== MOBILE USER AUTH =====================

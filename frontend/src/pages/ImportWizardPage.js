@@ -77,13 +77,20 @@ export default function ImportWizardPage() {
       formData.append('language', language);
       const { data } = await api.post('/admin/import-wizard', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
-        timeout: 120000,
+        timeout: 240000,
       });
       setParsedData(data.parsed_data);
       setUploadId(data.upload_id);
       setStep(3);
     } catch (err) {
-      setError(err.response?.data?.detail || 'Parsing failed. Check file format.');
+      const detail = err.response?.data?.detail;
+      if (err.code === 'ECONNABORTED' || err.message?.includes('timeout')) {
+        setError('File too large or server busy. Try a smaller file or split it.');
+      } else if (detail) {
+        setError(`Parsing failed: ${detail}`);
+      } else {
+        setError('Parsing failed. Check the file structure (Headings + bold Sanskrit + italic transliteration).');
+      }
     } finally {
       setLoading(false);
     }
