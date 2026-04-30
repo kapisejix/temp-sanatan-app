@@ -1,4 +1,5 @@
 import React, { useState, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { Upload, FileJson, FileText, Globe, ArrowRight, ArrowLeft, Check, AlertCircle, Eye, X, Loader2 } from 'lucide-react';
 
@@ -41,6 +42,7 @@ const STEPS = [
 
 export default function ImportWizardPage() {
   const { api } = useAuth();
+  const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [file, setFile] = useState(null);
   const [category, setCategory] = useState('chalisa');
@@ -103,6 +105,12 @@ export default function ImportWizardPage() {
     try {
       const { data } = await api.post(`/admin/import-wizard/publish/${uploadId}`);
       setPublishResult(data);
+      // Auto-redirect to the unified editor for the first imported item
+      const firstId = Array.isArray(data.item_ids) ? data.item_ids[0] : null;
+      if (firstId) {
+        navigate(`/admin/bhakti/editor/${firstId}?tab=content`);
+        return;
+      }
       setStep(4);
     } catch (err) {
       setError(err.response?.data?.detail || 'Publish failed');

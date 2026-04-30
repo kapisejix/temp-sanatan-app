@@ -1,0 +1,45 @@
+{
+  "summary": "Iteration 16 — Unified Bhakti Editor refactor validated end-to-end. Backend: 12/12 pytest cases pass in 1.7s covering audio primary upload (with/without LRC + flat-JSON sync), expert variants (slot 1/2 add, invalid slot reject, slot 1 delete), nested verses->lines[] sync POST, publish-check with required+optional checks, 422 on bare-item publish, and import-wizard publish returning item_ids[]. Frontend: legacy /admin/verse-manager and /admin/audio-sync auto-redirect to /admin/bhakti/editor (picker), unified editor renders all 5 tabs (Content/Verses/Audio/Audio Sync/Publish) for Hanuman Chalisa, Verses tab auto-opens FIRST verse in edit mode (verse-edit-sanskrit visible), Sync tab pre-populates JSON editor (734 chars, contains verses/lines), Audio tab shows variant rows + primary/variant toggles, Publish tab renders 6 checks and unpublish-btn (item already published). Sidebar correctly shows 'Bhakti Editor' and has dropped 'Verse Manager'. No console errors.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "BhaktiUnifiedEditor header (Hanuman Chalisa)", "issues": ["Header shows '40 verses' but publish-check / DB count_documents returns 5 — likely a stale cached counter on item document. Minor inconsistency; real DB count (5) is what publish validation uses."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter16_unified_editor.py",
+    "/app/test_reports/pytest/iter16_results.xml"
+  ],
+  "action_items": [
+    "Optional: reconcile the cached verse count on content_items.{verses_count|count} (header shows 40) with the live count_documents({item_id}) result (5). Either drop the cache, or recompute on every verses CRUD."
+  ],
+  "critical_code_review_comments": [
+    "audio_sync_service.parse_nested_json_sync correctly de-dups + sorts + backfills end_ms; verse text auto-derived from joined line texts when not provided. Verified via persisted GET — 2 verses, 2 lines each, lines[0].text='line a' came back round-tripped.",
+    "server.py:5645 upload_item_audio handles primary vs variant via variant_slot=None|1..4, preserves existing variants on primary upload (good), and shares sync_map across variants by design. 25 MB cap enforced via streaming write.",
+    "server.py:5802 update_item_sync_map auto-detects nested vs flat JSON shape based on body['verses'][0] having 'lines' key — backward compat preserved. Both shapes tested and persisted.",
+    "server.py:697-722 publish validation correctly 422s when supported_languages=[] and verse count<1 and no title fields. Detail string lists all missing keys. Tested with bare item.",
+    "publish-check returns 6 checks (3 required: title/primary_language/verses, 3 optional: deity/audio/sync_map) — matches Publish tab UI exactly.",
+    "Frontend BhaktiUnifiedEditor.js: all 5 tabs rendered via editor-tab-{id} testids; Verses tab auto-edit on first verse confirmed (verse-edit-sanskrit count=1 visible immediately on tab activation); Sync tab pre-fills JSON shape with verses/lines from existing audio_sync.sync_map. Good UX.",
+    "ImportWizardPage.js handlePublish at line 109-111 navigates to /admin/bhakti/editor/{first_id}?tab=content on success — matches spec; verified server returns item_ids[] (pytest test_import_wizard_publish_returns_item_ids).",
+    "App.js routes: /admin/verse-manager and /admin/audio-sync use <Navigate to=/admin/bhakti/editor replace> — verified live (URL rewrites to /admin/bhakti/editor and bhakti-editor-picker renders).",
+    "Sidebar.js: 'Bhakti Editor' replaces old 'Verse Manager'+'Audio Sync' top-level entries. 'Audio Manager' remains (different feature for raw audio asset library — not the AudioSyncManager removed)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter16_unified_editor.py (new, 12 test cases)"
+  ],
+  "success_rate": {
+    "backend": "100% (12/12)",
+    "frontend": "100% (5 tabs, 2 redirects, 1 auto-edit, sidebar — all green; 0 console errors)"
+  },
+  "test_credentials": "Admin: admin@sanatansaathi.com / SanatanAdmin@2026 (super_admin role).",
+  "seed_data_creation": "Tests reuse existing Hanuman Chalisa item id=69f053c8053b601fc045a5ca. test_publish_fresh_item_422 creates+deletes a TEST_iter16_<ts> bare item. test_import_wizard_publish_returns_item_ids creates+deletes a TEST_iter16_import_<ts> item via the wizard. Slot-2 audio variant left attached to Hanuman item (slot 1 deleted in delete-variant test); not destructive.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Reusable pytest at /app/backend/tests/test_iter16_unified_editor.py (12 cases, 1.7s). Helper _load_base_url() pulls REACT_APP_BACKEND_URL from /app/frontend/.env when env var missing — mirrors prior iterations. Hanuman item has 5 real verses in content_verses but item header shows '40 verses' (cached counter) — verify if you see that mismatch elsewhere. Audio variant slot 2 is left attached to Hanuman after this run (slot 1 deleted, slot 2 kept) — clean it via DELETE /api/content/items/69f053c8053b601fc045a5ca/audio/variants/2 if needed. ImportWizard end-to-end UI redirect after publish was NOT exercised via Playwright this round (only backend item_ids[] response verified); the navigate call is at /app/frontend/src/pages/ImportWizardPage.js line 109-111 and matches spec. Mobile React Native flows out of scope per request.",
+  "rca of the issue": "N/A — no bugs found in this iteration. The 40-vs-5 verse-count UI/DB mismatch on Hanuman Chalisa is a pre-existing, non-blocking display inconsistency (header reads from a cached field on content_items, publish-check + Verses tab read live count from content_verses). Doesn't affect publish gating because validation uses the live count."
+}

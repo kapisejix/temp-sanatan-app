@@ -43,10 +43,12 @@ export default function ContentDetailScreen({ navigation, route }) {
   const [loading, setLoading] = useState(false);
   const [audioErr, setAudioErr] = useState('');
 
-  const [audioMeta, setAudioMeta] = useState(null);     // { audio_url, sync_map, ... }
+  const [audioMeta, setAudioMeta] = useState(null);     // { audio_url, sync_map, variants, ... }
   const [activeVerseNum, setActiveVerseNum] = useState(0); // 1-indexed; 0 = none
+  const [activeLineIdx, setActiveLineIdx] = useState(-1);  // karaoke line index within active verse
   const [beginnerMode, setBeginnerMode] = useState(false);
   const [beginnerLoopNum, setBeginnerLoopNum] = useState(0); // current verse being looped
+  const [selectedVariant, setSelectedVariant] = useState('primary'); // 'primary' or slot number
 
   const soundRef = useRef(null);
   const beginnerRef = useRef({ active: false, verse: 0, loopCount: 0 });
@@ -70,6 +72,19 @@ export default function ContentDetailScreen({ navigation, route }) {
     return () => { cancel = true; };
   }, [backendId]);
 
+  // Reset playback when variant changes
+  useEffect(() => {
+    (async () => {
+      if (soundRef.current) {
+        try { await soundRef.current.unloadAsync(); } catch {}
+        soundRef.current = null;
+      }
+      setPlaying(false);
+      setActiveVerseNum(0);
+      setActiveLineIdx(-1);
+    })();
+  }, [selectedVariant]);
+
   // ---- Cleanup on unmount ----
   useEffect(() => {
     return () => {
@@ -81,12 +96,22 @@ export default function ContentDetailScreen({ navigation, route }) {
     };
   }, []);
 
-  // ---- Active-verse highlighter (driven by playback position) ----
+  // ---- Resolve the URL for the currently selected variant ----
+  const activeAudioUrl = useMemo(() => {
+    if (!audioMeta) return null;
+    if (selectedVariant === 'primary') return audioMeta.audio_url || null;
+    const v = (audioMeta.variants || []).find((x) => String(x.slot) === String(selectedVariant));
+    if (!v) return audioMeta.audio_url || null;
+    return v.url?.startsWith('http') ? v.url : `${API_BASE_URL.replace(/\/api$/, '')}${v.url}`;
+  }, [audioMeta, selectedVariant]);
+
+  // ---- Active-verse + active-line highlighter (driven by playback position) ----
   const onPlaybackUpdate = useCallback((status) => {
     if (!status.isLoaded) return;
     if (status.didJustFinish) {
       setPlaying(false);
       setActiveVerseNum(0);
+      setActiveLineIdx(-1);
       return;
     }
     if (audioMeta?.sync_map?.length && status.positionMillis != null) {
@@ -94,9 +119,20 @@ export default function ContentDetailScreen({ navigation, route }) {
       const cur = audioMeta.sync_map.find(
         (v) => pos >= v.start_ms && (v.end_ms == null || pos < v.end_ms)
       );
-      if (cur && cur.verse_num !== activeVerseNum) setActiveVerseNum(cur.verse_num);
+      if (cur) {
+        if (cur.verse_num !== activeVerseNum) setActiveVerseNum(cur.verse_num);
+        // Line-level karaoke: find current line within this verse
+        if (Array.isArray(cur.lines) && cur.lines.length) {
+          const lineIdx = cur.lines.findIndex(
+            (ln) => pos >= ln.start_ms && (ln.end_ms == null || pos < ln.end_ms)
+          );
+          if (lineIdx !== activeLineIdx) setActiveLineIdx(lineIdx);
+        } else if (activeLineIdx !== -1) {
+          setActiveLineIdx(-1);
+        }
+      }
     }
-  }, [audioMeta, activeVerseNum]);
+  }, [audioMeta, activeVerseNum, activeLineIdx]);
 
   // ---- Main play/pause toggle ----
   const handlePlay = async () => {
@@ -123,10 +159,10 @@ export default function ContentDetailScreen({ navigation, route }) {
       setLoading(true);
 
       let sound;
-      if (audioMeta?.audio_url) {
-        // Real MP3 with sync map
+      if (activeAudioUrl) {
+        // Real MP3 with sync map (primary or expert variant)
         const result = await Audio.Sound.createAsync(
-          { uri: audioMeta.audio_url },
+          { uri: activeAudioUrl },
           { shouldPlay: true, progressUpdateIntervalMillis: 200 }
         );
         sound = result.sound;
@@ -222,7 +258,11 @@ export default function ContentDetailScreen({ navigation, route }) {
   // ---- Verse rendering (uses sync_map text if present, else split by lines) ----
   const verses = useMemo(() => {
     if (audioMeta?.sync_map?.length) {
-      return audioMeta.sync_map.map((v) => ({ verse_num: v.verse_num, text: v.text }));
+      return audioMeta.sync_map.map((v) => ({
+        verse_num: v.verse_num,
+        text: v.text,
+        lines: Array.isArray(v.lines) ? v.lines : null,
+      }));
     }
     if (!item) return [];
     // Fallback: split on blank lines
@@ -270,6 +310,38 @@ export default function ContentDetailScreen({ navigation, route }) {
         </TouchableOpacity>
       </View>
 
+      {/* Variant picker (shown only when Expert Mode variants exist) */}
+      {Array.isArray(audioMeta?.variants) && audioMeta.variants.length > 0 && (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.variantBar}
+          testID="variant-picker"
+        >
+          <TouchableOpacity
+            onPress={() => setSelectedVariant('primary')}
+            style={[styles.variantChip, selectedVariant === 'primary' && styles.variantChipActive]}
+            testID="variant-chip-primary"
+          >
+            <Text style={[styles.variantChipText, selectedVariant === 'primary' && styles.variantChipTextActive]}>
+              डिफ़ॉल्ट
+            </Text>
+          </TouchableOpacity>
+          {audioMeta.variants.map((v) => (
+            <TouchableOpacity
+              key={v.slot}
+              onPress={() => setSelectedVariant(v.slot)}
+              style={[styles.variantChip, String(selectedVariant) === String(v.slot) && styles.variantChipActive]}
+              testID={`variant-chip-${v.slot}`}
+            >
+              <Text style={[styles.variantChipText, String(selectedVariant) === String(v.slot) && styles.variantChipTextActive]}>
+                {v.label || `Variant ${v.slot}`}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      )}
+
       {/* Status / mode banners */}
       {hasSyncedAudio && (
         <View style={styles.syncedBanner}>
@@ -295,6 +367,7 @@ export default function ContentDetailScreen({ navigation, route }) {
         {verses.length > 0 ? (
           verses.map((v) => {
             const isActive = activeVerseNum === v.verse_num;
+            const hasLines = Array.isArray(v.lines) && v.lines.length > 0;
             return (
               <View
                 key={v.verse_num}
@@ -304,9 +377,30 @@ export default function ContentDetailScreen({ navigation, route }) {
                 <Text style={[styles.verseNum, isActive && styles.verseNumActive]}>
                   {v.verse_num}
                 </Text>
-                <Text style={[styles.verseText, isActive && styles.verseTextActive]}>
-                  {v.text}
-                </Text>
+                {hasLines ? (
+                  <View style={{ flex: 1 }}>
+                    {v.lines.map((ln, i) => {
+                      const lineActive = isActive && activeLineIdx === i;
+                      return (
+                        <Text
+                          key={i}
+                          testID={`verse-${v.verse_num}-line-${i}`}
+                          style={[
+                            styles.verseText,
+                            isActive && styles.verseTextActive,
+                            lineActive && styles.lineActive,
+                          ]}
+                        >
+                          {ln.text}
+                        </Text>
+                      );
+                    })}
+                  </View>
+                ) : (
+                  <Text style={[styles.verseText, isActive && styles.verseTextActive]}>
+                    {v.text}
+                  </Text>
+                )}
               </View>
             );
           })
@@ -392,4 +486,34 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: COLORS.text,
   },
+  lineActive: {
+    backgroundColor: '#FFF4E6',
+    color: '#B45309',
+    fontWeight: '800',
+  },
+  variantBar: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    gap: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFF8F4',
+    borderBottomWidth: 1,
+    borderBottomColor: '#FDDDD4',
+  },
+  variantChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: '#FFF',
+    marginRight: 8,
+  },
+  variantChipActive: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
+  variantChipText: { fontSize: 12, color: COLORS.textSecondary, fontWeight: '700' },
+  variantChipTextActive: { color: '#FFF' },
 });

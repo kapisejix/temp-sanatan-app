@@ -7,9 +7,7 @@ import LoginPage from "./pages/LoginPage";
 import DashboardPage from "./pages/DashboardPage";
 import ContentManagerPage from "./pages/ContentManagerPage";
 import ContentUploadPage from "./pages/ContentUploadPage";
-import VerseManagerPage from "./pages/VerseManagerPage";
 import MultilingualEditorPage from "./pages/MultilingualEditorPage";
-import AudioSyncManagerPage from "./pages/AudioSyncManagerPage";
 import ArtiManagerPage from "./pages/ArtiManagerPage";
 import KathaManagerPage from "./pages/KathaManagerPage";
 import GranthManagerPage from "./pages/GranthManagerPage";
@@ -32,6 +30,8 @@ import { BlogListPage, BlogDetailPage, CmsPage } from "./pages/PublicPages";
 import BirthChartPage from "./pages/BirthChartPage";
 import ImportWizardPage from "./pages/ImportWizardPage";
 import SmartSearchPage from "./pages/SmartSearchPage";
+import BhaktiUnifiedEditor from "./pages/BhaktiUnifiedEditor";
+import BhaktiEditorPicker from "./pages/BhaktiEditorPicker";
 import { Loader2 } from "lucide-react";
 // Bhakti Category Managers
 import AartiManagerPageNew from "./pages/bhakti/AartiManagerPage";
@@ -90,9 +90,11 @@ function AppRoutes() {
         <Route path="import-wizard" element={<ImportWizardPage />} />
         <Route path="search" element={<SmartSearchPage />} />
         <Route path="content-manager" element={<ContentManagerPage />} />
-        <Route path="verse-manager" element={<VerseManagerPage />} />
+        <Route path="verse-manager" element={<Navigate to="/admin/bhakti/editor" replace />} />
         <Route path="multilingual-editor" element={<MultilingualEditorPage />} />
-        <Route path="audio-sync" element={<AudioSyncManagerPage />} />
+        <Route path="audio-sync" element={<Navigate to="/admin/bhakti/editor" replace />} />
+        <Route path="bhakti/editor" element={<BhaktiEditorPicker />} />
+        <Route path="bhakti/editor/:id" element={<BhaktiUnifiedEditor />} />
         <Route path="daily-scheduler" element={<DailySchedulerPage />} />
         <Route path="arti-manager" element={<AartiManagerPageNew />} />
         <Route path="chalisa-manager" element={<ChalisaManagerPage />} />

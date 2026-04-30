@@ -656,6 +656,9 @@ class ContentItemCreate(BaseModel):
     tags: List[str] = []
     supported_languages: List[str] = ["hi", "en", "sa"]
     is_premium: bool = False
+    # Hybrid multilingual — optional per-language title/description map
+    # shape: {"hi": {"title": "...", "description": "..."}, "en": {...}, ...}
+    languages: Optional[Dict[str, Dict[str, str]]] = None
 
 @api_router.post("/content/items")
 async def create_content_item(req: ContentItemCreate, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
@@ -697,8 +700,61 @@ async def update_item_status(item_id: str, request: Request, admin: dict = Depen
     status = body.get("status")
     if status not in ["draft", "published", "archived"]:
         raise HTTPException(status_code=400, detail="Invalid status")
+    # Validate on publish — require title, primary language, and >=1 verse
+    if status == "published":
+        item = await db.content_items.find_one({"_id": ObjectId(item_id)})
+        if not item:
+            raise HTTPException(status_code=404, detail="Item not found")
+        missing = []
+        if not (item.get("title_hi") or item.get("title_en") or item.get("title_sa")):
+            missing.append("title (hi/en/sa)")
+        supported = item.get("supported_languages") or []
+        if not supported:
+            missing.append("supported_languages")
+        verse_count = await db.content_verses.count_documents({"item_id": item_id})
+        if verse_count < 1:
+            missing.append("at least 1 verse")
+        if missing:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Cannot publish — missing: {', '.join(missing)}"
+            )
     await db.content_items.update_one({"_id": ObjectId(item_id)}, {"$set": {"status": status, "updated_at": datetime.now(timezone.utc).isoformat()}})
     return {"message": f"Status updated to {status}"}
+
+
+@api_router.get("/content/items/{item_id}/publish-check")
+async def publish_check(item_id: str, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    """Return a validation checklist for the Publish tab — does not mutate state."""
+    try:
+        item = await db.content_items.find_one({"_id": ObjectId(item_id)})
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid item_id")
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    verse_count = await db.content_verses.count_documents({"item_id": item_id})
+    audio_sync = item.get("audio_sync") or {}
+    checks = [
+        {"key": "title", "label": "Title (Hi/En/Sa)",
+         "ok": bool(item.get("title_hi") or item.get("title_en") or item.get("title_sa"))},
+        {"key": "primary_language", "label": "At least one supported language",
+         "ok": bool(item.get("supported_languages"))},
+        {"key": "verses", "label": "At least 1 verse", "ok": verse_count >= 1,
+         "detail": f"{verse_count} verse(s)"},
+        {"key": "deity", "label": "Deity set (optional)",
+         "ok": bool(item.get("deity") or item.get("deity_hi")), "optional": True},
+        {"key": "audio", "label": "Audio uploaded (optional)",
+         "ok": bool(audio_sync.get("audio_url")), "optional": True},
+        {"key": "sync_map", "label": "Audio-text sync map (optional)",
+         "ok": bool(audio_sync.get("sync_map")), "optional": True},
+    ]
+    can_publish = all(c["ok"] for c in checks if not c.get("optional"))
+    return {
+        "can_publish": can_publish,
+        "current_status": item.get("status", "draft"),
+        "checks": checks,
+        "verse_count": verse_count,
+    }
 
 # ===================== CONTENT VERSES =====================
 
@@ -4168,6 +4224,7 @@ async def import_wizard_publish(upload_id: str, admin: dict = Depends(require_ro
     language = upload.get("target_language", "hi")
     now = datetime.now(timezone.utc).isoformat()
     published = 0
+    published_ids: List[str] = []
 
     for item_data in parsed_data:
         title = item_data.get("title", "Untitled")
@@ -4204,6 +4261,7 @@ async def import_wizard_publish(upload_id: str, admin: dict = Depends(require_ro
         }
         result = await db.content_items.insert_one(content_doc)
         item_id = str(result.inserted_id)
+        published_ids.append(item_id)
 
         for verse in item_data.get("verses", []):
             verse_doc = {
@@ -4231,9 +4289,13 @@ async def import_wizard_publish(upload_id: str, admin: dict = Depends(require_ro
 
     await db.upload_logs.update_one(
         {"_id": ObjectId(upload_id)},
-        {"$set": {"status": "published", "published_at": now}}
+        {"$set": {"status": "published", "published_at": now, "published_item_ids": published_ids}}
     )
-    return {"message": f"Published {published} items with {language} language mapping", "count": published}
+    return {
+        "message": f"Published {published} items with {language} language mapping",
+        "count": published,
+        "item_ids": published_ids,
+    }
 
 
 # ===================== LIVE PREVIEW =====================
@@ -5587,12 +5649,17 @@ async def upload_item_audio(
     sync_file: Optional[UploadFile] = File(None),
     sync_format: Optional[str] = Form(None),  # 'lrc' | 'json' (auto-detected from filename when None)
     duration_ms: Optional[int] = Form(None),
+    variant_label: Optional[str] = Form(None),  # e.g. "Male", "Female", "Slow", "Fast"
+    variant_slot: Optional[int] = Form(None),   # 1..4 (Expert Mode slot). When None, primary audio.
     admin: dict = Depends(require_role(["super_admin", "content_admin"]))
 ):
-    """Upload (or replace) an MP3 + optional LRC/JSON sync file for a content item.
+    """Upload (or replace) an audio file + optional sync map for a content item.
 
-    The mp3 is stored on disk under /app/backend/static/audio/items/{item_id}.mp3
-    and exposed via the static mount at /api/audio-static/items/{item_id}.mp3
+    Two modes:
+      - Primary (variant_slot=None): Stored at /app/backend/static/audio/items/{item_id}.{ext}
+        and set as the default audio. Mirror-saves the sync_map onto the primary slot.
+      - Expert variant (variant_slot=1..4): Stored at items/{item_id}_v{slot}.{ext}
+        with a label (e.g. "Male", "Female"). The primary sync_map is shared by all variants.
     """
     # Validate item exists
     try:
@@ -5602,13 +5669,25 @@ async def upload_item_audio(
     if not item_doc:
         raise HTTPException(status_code=404, detail="Item not found")
 
-    # Save MP3
+    # Save audio
     if not audio.filename:
         raise HTTPException(status_code=400, detail="Audio file required")
     ext = (audio.filename.rsplit('.', 1)[-1] or 'mp3').lower()
     if ext not in {"mp3", "m4a", "wav", "ogg", "aac"}:
         raise HTTPException(status_code=400, detail=f"Unsupported audio format: .{ext}")
-    target_path = AUDIO_STATIC_DIR / f"{item_id}.{ext}"
+
+    is_variant = variant_slot is not None
+    if is_variant:
+        try:
+            slot = int(variant_slot)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="variant_slot must be 1..4")
+        if slot < 1 or slot > 4:
+            raise HTTPException(status_code=400, detail="variant_slot must be 1..4")
+        target_path = AUDIO_STATIC_DIR / f"{item_id}_v{slot}.{ext}"
+    else:
+        target_path = AUDIO_STATIC_DIR / f"{item_id}.{ext}"
+
     # Save file bytes (with a 25MB safety cap to prevent disk exhaustion)
     MAX_AUDIO_BYTES = 25 * 1024 * 1024
     written = 0
@@ -5624,7 +5703,7 @@ async def upload_item_audio(
                 raise HTTPException(status_code=413, detail="Audio file too large (max 25 MB)")
             f.write(chunk)
 
-    # Parse sync file if provided
+    # Parse sync file if provided (only meaningful on primary upload)
     sync_map: List[Dict[str, Any]] = []
     if sync_file is not None and sync_file.filename:
         sync_bytes = await sync_file.read()
@@ -5636,20 +5715,135 @@ async def upload_item_audio(
         if sync_map and sync_map[-1].get("end_ms") is None and duration_ms:
             sync_map[-1]["end_ms"] = int(duration_ms)
 
+    now = datetime.now(timezone.utc).isoformat()
+
+    if is_variant:
+        slot = int(variant_slot)
+        variant_url = f"/api/audio-static/items/{item_id}_v{slot}.{ext}"
+        label = variant_label or f"Variant {slot}"
+        # Fetch existing audio_sync to merge variants
+        existing = (item_doc.get("audio_sync") or {})
+        variants = list(existing.get("variants") or [])
+        # Replace or append slot
+        variants = [v for v in variants if int(v.get("slot", 0)) != slot]
+        variants.append({
+            "slot": slot,
+            "label": label,
+            "url": variant_url,
+            "format": ext,
+            "duration_ms": int(duration_ms) if duration_ms else None,
+            "uploaded_at": now,
+        })
+        variants.sort(key=lambda v: v["slot"])
+        await db.content_items.update_one(
+            {"_id": ObjectId(item_id)},
+            {"$set": {"audio_sync.variants": variants, "updated_at": now}}
+        )
+        return {"message": f"Variant {slot} uploaded", "variant_url": variant_url, "variants": variants}
+
+    # Primary upload — also preserves existing variants
+    existing = (item_doc.get("audio_sync") or {})
+    existing_variants = list(existing.get("variants") or [])
     audio_url = f"/api/audio-static/items/{item_id}.{ext}"
     audio_meta = {
         "audio_url": audio_url,
-        "sync_map": sync_map,
-        "duration_ms": duration_ms,
+        "sync_map": sync_map or existing.get("sync_map", []),
+        "duration_ms": duration_ms if duration_ms is not None else existing.get("duration_ms"),
         "format": ext,
-        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+        "variants": existing_variants,
+        "uploaded_at": now,
         "uploaded_by": admin["_id"],
     }
     await db.content_items.update_one(
         {"_id": ObjectId(item_id)},
-        {"$set": {"audio_sync": audio_meta, "audio_url": audio_url, "updated_at": datetime.now(timezone.utc).isoformat()}}
+        {"$set": {"audio_sync": audio_meta, "audio_url": audio_url, "updated_at": now}}
     )
-    return {"message": "Audio uploaded", "audio_url": audio_url, "sync_verses": len(sync_map)}
+    return {
+        "message": "Audio uploaded",
+        "audio_url": audio_url,
+        "sync_verses": len(audio_meta["sync_map"]),
+        "variants": existing_variants,
+    }
+
+
+@api_router.delete("/content/items/{item_id}/audio/variants/{slot}")
+async def delete_item_audio_variant(
+    item_id: str,
+    slot: int,
+    admin: dict = Depends(require_role(["super_admin", "content_admin"]))
+):
+    """Delete a specific Expert-mode audio variant (slot 1..4)."""
+    if slot < 1 or slot > 4:
+        raise HTTPException(status_code=400, detail="slot must be 1..4")
+    try:
+        item = await db.content_items.find_one({"_id": ObjectId(item_id)}, {"audio_sync": 1})
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid item_id")
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    variants = list((item.get("audio_sync") or {}).get("variants") or [])
+    removed = [v for v in variants if int(v.get("slot", 0)) == slot]
+    kept = [v for v in variants if int(v.get("slot", 0)) != slot]
+    for v in removed:
+        fmt = v.get("format", "mp3")
+        p = AUDIO_STATIC_DIR / f"{item_id}_v{slot}.{fmt}"
+        if p.exists():
+            try:
+                p.unlink()
+            except Exception:
+                pass
+    await db.content_items.update_one(
+        {"_id": ObjectId(item_id)},
+        {"$set": {"audio_sync.variants": kept, "updated_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    return {"message": f"Variant {slot} removed", "variants": kept}
+
+
+@api_router.post("/content/items/{item_id}/audio/sync")
+async def update_item_sync_map(
+    item_id: str,
+    request: Request,
+    admin: dict = Depends(require_role(["super_admin", "content_admin"]))
+):
+    """Update only the sync_map (line-level) for an item's audio. Accepts strict nested JSON.
+
+    Body: {audio_file?, duration_ms?, verses: [{verse_id, start_ms, end_ms, lines:[...]}]}
+    or legacy: [{verse_num, start_ms, end_ms, text, lines?}]
+    """
+    try:
+        item = await db.content_items.find_one({"_id": ObjectId(item_id)})
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid item_id")
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    body = await request.json()
+    try:
+        if isinstance(body, dict) and isinstance(body.get("verses"), list) \
+                and body["verses"] and isinstance(body["verses"][0], dict) \
+                and "lines" in body["verses"][0]:
+            from audio_sync_service import parse_nested_json_sync
+            sync_map = parse_nested_json_sync(body)
+            duration_ms = body.get("duration_ms")
+        else:
+            from audio_sync_service import parse_json_sync
+            sync_map = parse_json_sync(body)
+            duration_ms = None
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Sync parse error: {e}")
+
+    existing = (item.get("audio_sync") or {})
+    now = datetime.now(timezone.utc).isoformat()
+    new_meta = {
+        **existing,
+        "sync_map": sync_map,
+        "duration_ms": duration_ms if duration_ms is not None else existing.get("duration_ms"),
+        "updated_at": now,
+    }
+    await db.content_items.update_one(
+        {"_id": ObjectId(item_id)},
+        {"$set": {"audio_sync": new_meta, "updated_at": now}}
+    )
+    return {"message": "Sync map updated", "sync_verses": len(sync_map)}
 
 
 @api_router.get("/content/items/{item_id}/audio")
