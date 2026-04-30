@@ -331,6 +331,7 @@ function FullTextTab({ item, api, selectedLang, setSelectedLang, onSaved, setErr
   const activeLang = selectedLang || localLang;
   const setActiveLang = setSelectedLang || setLocalLang;
   const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);  // any unsaved edits pending?
 
   // Build initial state from item.languages.{lang}.full_text + legacy `full_text`
   const buildInitial = () => {
@@ -1519,6 +1520,85 @@ function AartiSyncTab({ item, api, lang, onChanged, setError, setStatus }) {
   const [jsonText, setJsonText] = useState('');
   const [saving, setSaving] = useState(false);
   const [parseErr, setParseErr] = useState('');
+  const fileInputRef = useRef(null);
+
+  // --- Minimal LRC parser (reused locally so we can accept .lrc uploads
+  //     without adding a round-trip to the backend parser). Lines that match
+  //     `[mm:ss.xxx]text` are converted to {text, start_ms}. Consecutive lines
+  //     become the `lines[]` of one auto-grouped verse, OR one verse each when
+  //     the file has blank-line separators. ---
+  const parseLrcToNested = (text) => {
+    const LRC = /^\s*\[(\d+):(\d{1,2})(?:\.(\d{1,3}))?\](.*)$/;
+    const rawLines = [];
+    for (const line of String(text).split(/\r?\n/)) {
+      const m = line.match(LRC);
+      if (!m) continue;
+      const min = parseInt(m[1], 10), sec = parseInt(m[2], 10);
+      const msRaw = m[3] || '0';
+      const ms = parseInt((msRaw + '000').slice(0, 3), 10);
+      rawLines.push({ start_ms: (min * 60 + sec) * 1000 + ms, text: m[4].trim() });
+    }
+    rawLines.sort((a, b) => a.start_ms - b.start_ms);
+    // Backfill end_ms from next start
+    for (let i = 0; i < rawLines.length; i++) {
+      rawLines[i].end_ms = rawLines[i + 1] ? rawLines[i + 1].start_ms : rawLines[i].start_ms + 3000;
+    }
+    // Group every 2 consecutive lines into one verse (typical aarti couplets).
+    // Admin can still edit the grouping in the JSON editor before saving.
+    const verses = [];
+    for (let i = 0; i < rawLines.length; i += 2) {
+      const group = rawLines.slice(i, i + 2);
+      verses.push({
+        verse_id: verses.length + 1,
+        start_ms: group[0].start_ms,
+        end_ms: group[group.length - 1].end_ms,
+        lines: group,
+      });
+    }
+    return {
+      audio_file: (bucket.audio_versions && bucket.audio_versions[0] && bucket.audio_versions[0].url) || '',
+      duration_ms: rawLines.length ? rawLines[rawLines.length - 1].end_ms : 0,
+      verses,
+    };
+  };
+
+  const handleFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setParseErr('');
+    try {
+      const text = await file.text();
+      let nested;
+      if (file.name.toLowerCase().endsWith('.lrc')) {
+        nested = parseLrcToNested(text);
+        if (!nested.verses.length) throw new Error('No timestamps found in LRC file');
+      } else if (file.name.toLowerCase().endsWith('.json')) {
+        const parsed = JSON.parse(text);
+        // Accept strict nested already OR a legacy flat list — normalize
+        if (Array.isArray(parsed)) {
+          nested = {
+            audio_file: '', duration_ms: 0,
+            verses: parsed.map((v, i) => ({
+              verse_id: v.verse_num || v.verse_id || i + 1,
+              start_ms: v.start_ms ?? v.start ?? 0,
+              end_ms: v.end_ms ?? null,
+              lines: v.lines && v.lines.length ? v.lines : (v.text ? [{ text: v.text, start_ms: v.start_ms ?? 0, end_ms: v.end_ms }] : []),
+            })),
+          };
+        } else {
+          nested = parsed;
+        }
+      } else {
+        throw new Error('Only .lrc or .json files are accepted');
+      }
+      setJsonText(JSON.stringify(nested, null, 2));
+      setStatus(`✓ Parsed ${file.name} → ${nested.verses?.length || 0} verses. Review and hit "Save Sync".`);
+    } catch (err) {
+      setParseErr('Parse error: ' + err.message);
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
 
   useEffect(() => {
     // Reset editor whenever the selected language changes
@@ -1578,7 +1658,26 @@ function AartiSyncTab({ item, api, lang, onChanged, setError, setStatus }) {
           <code className="bg-[#F3EDEA] px-1 rounded ml-1">end_ms</code> and nested
           <code className="bg-[#F3EDEA] px-1 rounded ml-1">lines[]</code>. Overlaps are rejected.
         </p>
-        <textarea value={jsonText} onChange={(e) => setJsonText(e.target.value)} rows={20}
+
+        {/* File import — accepts .lrc or .json, parses client-side and populates the editor */}
+        <div className="flex items-center gap-2 bg-[#F8F3F1] border border-[#E8E4E1] rounded-lg px-3 py-2">
+          <Upload size={14} className="text-[#7A8690]" />
+          <label htmlFor={`sync-file-${lang}`} className="text-xs font-medium text-[#374652]">
+            Or upload <code className="bg-white px-1 rounded">.lrc</code> /{' '}
+            <code className="bg-white px-1 rounded">.json</code>
+          </label>
+          <input
+            id={`sync-file-${lang}`}
+            ref={fileInputRef}
+            type="file"
+            accept=".lrc,.json,.txt"
+            onChange={handleFile}
+            data-testid={`aarti-sync-file-${lang}`}
+            className="ml-auto text-xs file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:text-[11px] file:bg-[#E95A34] file:text-white"
+          />
+        </div>
+
+        <textarea value={jsonText} onChange={(e) => setJsonText(e.target.value)} rows={18}
                   data-testid={`aarti-sync-editor-${lang}`} spellCheck={false}
                   className="w-full px-3 py-2 bg-[#0F172A] text-[#E2E8F0] font-mono text-xs rounded-lg border border-[#1E293B]" />
         {parseErr && <p className="text-xs text-red-600">{parseErr}</p>}
