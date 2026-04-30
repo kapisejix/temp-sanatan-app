@@ -189,3 +189,7 @@ credentials.json
 *.pem
 *.key
 .credentials
+
+# Allow env templates so new contributors see what to fill in
+!.env.example
+!**/.env.example

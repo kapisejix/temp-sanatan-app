@@ -295,3 +295,24 @@ Multilingual spiritual platform: React Admin Panel + FastAPI Backend + Expo Mobi
 - Verified by `testing_agent_v3_fork` → `/app/test_reports/iteration_23.json` (8/8 sub-tests pass, Hindi sync NOT mutated).
 
 **Explicitly deferred** (user directive): P1 Cloudflare RUM suppression, P2 per-tab save indicators, Auto-Sync LLM.
+
+
+## Session 23 (Feb 30 2026) — External-development packaging (docs only)
+
+**Goal:** prepare the repo for development outside the Emergent platform. Strictly documentation + env templates. **Zero functional code changes.**
+
+- Created `/app/docs/` developer documentation set:
+  - `BLUEPRINT.md` (copied from project root) — canonical product spec
+  - `ONBOARDING.md` — Day-1 developer guide (repo tour, conventions, starter tickets, glossary)
+  - `SETUP.md` — local install + run for backend / frontend / expo
+  - `API.md` — categorized endpoint reference (~190 routes; full request/response samples for canonical endpoints)
+  - `DATA_SCHEMA.md` — MongoDB collections, document shapes, sync JSON spec, recommended indexes, static media layout
+  - `EMERGENT_DEPENDENCIES.md` — exact replacement guide for `emergentintegrations` + `EMERGENT_LLM_KEY` (Option A install-from-Emergent-index, Option B native SDK swap)
+  - `current_status.md` (kept in sync with `/app/current_status.md`)
+- Created env templates:
+  - `/app/backend/.env.example`
+  - `/app/frontend/.env.example`
+  - `/app/expo-app/.env.example`
+- `/app/.gitignore` updated with `!**/.env.example` negation so the templates ship with the repo.
+- `/app/README.md` rewritten as a proper project landing page pointing to `/docs/`.
+- No source code touched. Backend + frontend services remained running throughout.
