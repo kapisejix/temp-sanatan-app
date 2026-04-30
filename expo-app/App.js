@@ -17,6 +17,7 @@ import BhaktiScreen from './src/screens/v2/BhaktiScreen';
 import KundliScreen from './src/screens/v2/KundliScreen';
 import PanchangScreen from './src/screens/v2/PanchangScreen';
 import ProfileScreen from './src/screens/v2/ProfileScreen';
+import LanguageSettingsScreen from './src/screens/v2/LanguageSettingsScreen';
 
 // Bhakti flow inner screens
 import DeityDetailScreen from './src/screens/v2/DeityDetailScreen';
@@ -112,6 +113,7 @@ function ProfileStackNav() {
   return (
     <ProfileStack.Navigator screenOptions={{ headerShown: false }}>
       <ProfileStack.Screen name="ProfileRoot" component={withFAB(ProfileScreen)} />
+      <ProfileStack.Screen name="LanguageSettings" component={withFAB(LanguageSettingsScreen)} />
     </ProfileStack.Navigator>
   );
 }

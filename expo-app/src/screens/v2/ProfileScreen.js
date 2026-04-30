@@ -19,10 +19,16 @@ export default function ProfileScreen({ navigation }) {
     );
   };
 
+  const LANG_LABELS = {
+    hi: 'हिन्दी', en: 'English', sa: 'संस्कृत', mr: 'मराठी',
+    gu: 'ગુજરાતી', ta: 'தமிழ்', te: 'తెలుగు', bn: 'বাংলা',
+  };
+  const currentLang = LANG_LABELS[user?.preferred_language] || LANG_LABELS.hi;
+
   const items = [
     { icon: '🔮', label_hi: 'मेरी कुंडली', sub: 'जन्म विवरण देखें/संपादित करें', action: () => navigation.jumpTo && navigation.jumpTo('KundliTab') },
     { icon: '⭐', label_hi: 'सब्सक्रिप्शन', sub: 'फ्री प्लान', action: () => {} },
-    { icon: '🌐', label_hi: 'भाषा', sub: 'हिन्दी', action: () => {} },
+    { icon: '🌐', label_hi: 'भाषा · Language', sub: currentLang, action: () => navigation.navigate('LanguageSettings'), testID: 'profile-language-row' },
     { icon: '🔔', label_hi: 'सूचनाएँ', sub: 'सक्षम', action: () => {} },
     { icon: '⚙️', label_hi: 'सेटिंग्स', sub: '', action: () => {} },
     { icon: '❓', label_hi: 'सहायता', sub: '', action: () => {} },
@@ -41,7 +47,7 @@ export default function ProfileScreen({ navigation }) {
         </View>
 
         {items.map((it, i) => (
-          <TouchableOpacity key={i} style={styles.row} onPress={it.action}>
+          <TouchableOpacity key={i} style={styles.row} onPress={it.action} testID={it.testID}>
             <Text style={styles.rowIcon}>{it.icon}</Text>
             <View style={{ flex: 1 }}>
               <Text style={styles.rowLabel}>{it.label_hi}</Text>

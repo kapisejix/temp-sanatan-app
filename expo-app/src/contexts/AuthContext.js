@@ -69,7 +69,20 @@ export function AuthProvider({ children }) {
     setUser(null);
   }, []);
 
-  const value = { user, bootstrapping, login, signup, logout, refresh: bootstrap };
+  /** Update the signed-in user's preferred content language. Persists on the
+   *  backend (app_users.preferred_language) and updates local state so screens
+   *  re-render with the new language immediately. */
+  const updatePreferredLanguage = useCallback(async (lang) => {
+    const next = await api.mobileUpdateSettings({ preferred_language: lang });
+    setUser((u) => {
+      const merged = { ...(u || {}), preferred_language: next.preferred_language || lang };
+      AsyncStorage.setItem(USER_KEY, JSON.stringify(merged)).catch(() => {});
+      return merged;
+    });
+    return lang;
+  }, []);
+
+  const value = { user, bootstrapping, login, signup, logout, refresh: bootstrap, updatePreferredLanguage };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

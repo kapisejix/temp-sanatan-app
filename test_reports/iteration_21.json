@@ -1,0 +1,37 @@
+{
+  "summary": "Iter21 — Mobile (Expo) aarti per-language playback contract + preferred_language settings + JS syntax check. ALL GREEN. Backend: 14/14 new pytest cases in test_iter21_mobile_aarti_lang.py pass (3.0s). Iter20 regression: 27/27 still pass (3.5s). JS syntax: 6/6 mobile files parse cleanly via @babel/parser (jsx + ESM + optional chaining + nullish coalescing).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter21_mobile_aarti_lang.py",
+    "/app/backend/tests/syntax_check_iter21.js",
+    "/app/test_reports/pytest/iter21.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "GET /api/content/items/{AARTI_ID} returns category='aarti' with supported_languages=['hi','mr'] — mobile uses these to detect aarti and choose lang. Verified.",
+    "GET /api/content/items/{AARTI_ID}/lang/hi/media returns full bundle with thumbnail+sync (uploaded in iter20). Public — no auth header needed. Verified by explicit no-auth Session.",
+    "GET /api/content/items/{AARTI_ID}/lang/mr/media returns 200 with empty audio_versions and null video — exactly the empty bundle the mobile fallback cascade (preferred → hi → first_supported) expects.",
+    "PUT /api/auth/mobile/settings whitelists preferred_language and persists on app_users; subsequent GET /api/auth/mobile/me reflects the new value (verified for both 'en' and 'hi'). Invalid 'xx' → 400. Empty body {} → 400. Unauthenticated → 401/403.",
+    "Mobile JS files (ContentDetailScreen.js, LanguageSettingsScreen.js, ProfileScreen.js, App.js, AuthContext.js, api/client.js) — all parse cleanly via @babel/parser with jsx+module plugins. No syntax errors."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter21_mobile_aarti_lang.py (new — 14 cases)",
+    "/app/backend/tests/syntax_check_iter21.js (new — node-based @babel/parser syntax gate for 6 mobile files)",
+    "/app/memory/test_credentials.md (added mobile auth endpoint reference + throwaway user pattern note)"
+  ],
+  "success_rate": {
+    "backend": "100% (14/14 iter21 + 27/27 iter20 regression = 41/41)",
+    "frontend": "N/A — backend-only request; mobile JS syntax gate 6/6 OK"
+  },
+  "test_credentials": "admin@sanatansaathi.com / SanatanAdmin@2026 (super_admin); mobile signup creates fresh TEST_iter21_lang_<ts>@example.com per run.",
+  "seed_data_creation": "iter21 creates one throwaway mobile app_users doc per run (TEST_iter21_lang_<ts>@example.com). Non-destructive. No media uploads — relies on iter20-uploaded hi thumbnail+sync as fixtures (still in DB).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "iter21 = 14 backend cases verifying the exact contracts the Expo mobile app consumes for (P0) aarti detection + per-lang media fetch with fallback and (P1) preferred_language settings. Mobile UI was NOT runtime-tested (Expo can't be Playwright-driven); only static syntax-checked. Re-run with: pytest /app/backend/tests/test_iter21_mobile_aarti_lang.py -v. Re-run JS syntax: NODE_PATH=/app/expo-app/node_modules node /app/backend/tests/syntax_check_iter21.js. AARTI_ID=69f1e1a77488457efddb02b7 has hi thumbnail+sync uploaded by iter20 — if those are wiped, iter21::test_hi_bundle_has_thumbnail_and_sync will fail; re-upload via iter20 fixtures.",
+  "rca of the issue": "N/A — clean backend contracts, all 41/41 cases pass, all 6 mobile JS files parse cleanly."
+}

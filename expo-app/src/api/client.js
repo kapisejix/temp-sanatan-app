@@ -123,12 +123,19 @@ export const api = {
   getVedaChapterVerses: (chapterId, lang = 'hi') => axios.get(`${API_BASE_URL}/vedas/chapter-verses/${chapterId}?lang=${lang}`).then(r => r.data),
   // Audio sync (public)
   getItemAudio: (itemId) => axios.get(`${API_BASE_URL}/content/items/${itemId}/audio`).then(r => r.data),
+  // Fetch full content item doc (for category detection)
+  getContentItem: (itemId) => axios.get(`${API_BASE_URL}/content/items/${itemId}`).then(r => r.data),
+  // Aarti per-language media bundle (public)
+  getAartiLangMedia: (itemId, lang) =>
+    axios.get(`${API_BASE_URL}/content/items/${itemId}/lang/${lang}/media`).then(r => r.data),
   // Yogas (auth)
   detectYogas: () => client.get('/yogas').then(r => r.data),
   // Mobile auth
   mobileSignup,
   mobileLogin,
   mobileMe: () => client.get('/auth/mobile/me').then(r => r.data),
+  // PUT /auth/mobile/settings — update preferred_language / name
+  mobileUpdateSettings: (patch) => client.put('/auth/mobile/settings', patch).then(r => r.data),
 
   // Authenticated
   ensureLogin: async () => {

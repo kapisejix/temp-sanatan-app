@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
-import { Audio } from 'expo-av';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, ActivityIndicator, Image } from 'react-native';
+import { Audio, Video, ResizeMode } from 'expo-av';
 import { COLORS, API_BASE_URL } from '../../config/api';
 import { DEITY_CONTENT, DAILY_BHAKTI } from '../../data/mockData';
 import SafeScreen from '../../components/SafeScreen';
 import ScreenHeader from '../../components/ScreenHeader';
 import api from '../../api/client';
+import { useAuth } from '../../contexts/AuthContext';
 
 // ---- Helpers ----
 function findContent(contentId) {
@@ -36,8 +37,19 @@ function resolveBackendId(contentId) {
 
 export default function ContentDetailScreen({ navigation, route }) {
   const { contentId } = route.params || {};
-  const item = findContent(contentId);
+  const { user } = useAuth();
+  const mockItem = findContent(contentId);
   const backendId = resolveBackendId(contentId);
+
+  // Fetched full item doc from backend (only when backendId is present). Used to
+  // detect category === 'aarti' and drive per-language media rendering.
+  const [backendItem, setBackendItem] = useState(null);
+  const [aartiBundle, setAartiBundle] = useState(null); // GET /content/items/:id/lang/:lang/media
+  const [resolvedLang, setResolvedLang] = useState('hi');
+
+  // Merge local mock (if any) with backend doc. Backend wins when both present.
+  const item = backendItem || mockItem;
+  const isAarti = (backendItem?.category || '').toLowerCase() === 'aarti';
 
   const [playing, setPlaying] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -53,15 +65,67 @@ export default function ContentDetailScreen({ navigation, route }) {
   const soundRef = useRef(null);
   const beginnerRef = useRef({ active: false, verse: 0, loopCount: 0 });
 
-  // ---- Fetch audio sync metadata ----
+  // ---- Fetch backend item doc (so we know category + supported_languages + languages map) ----
   useEffect(() => {
     let cancel = false;
     if (!backendId) return;
     (async () => {
       try {
+        const doc = await api.getContentItem(backendId);
+        if (!cancel && doc && doc._id) setBackendItem(doc);
+      } catch { /* fall back to mock */ }
+    })();
+    return () => { cancel = true; };
+  }, [backendId]);
+
+  // ---- Aarti-only: resolve language + fetch per-language media bundle ----
+  useEffect(() => {
+    let cancel = false;
+    if (!backendId || !isAarti) return;
+    const supported = backendItem?.supported_languages || [];
+    const preferred = user?.preferred_language || 'hi';
+    // Fallback: preferred → hi → first supported
+    let lang = 'hi';
+    if (supported.includes(preferred)) lang = preferred;
+    else if (supported.includes('hi')) lang = 'hi';
+    else if (supported.length) lang = supported[0];
+    setResolvedLang(lang);
+    (async () => {
+      try {
+        const bundle = await api.getAartiLangMedia(backendId, lang);
+        if (cancel) return;
+        // If this language has no media at all, try fallback cascade
+        const hasAny = bundle && (
+          (bundle.audio_versions && bundle.audio_versions.length) ||
+          bundle.video || bundle.thumbnail || bundle.sync || bundle.full_text
+        );
+        if (!hasAny) {
+          const tryLangs = [preferred, 'hi', ...supported].filter((l, i, a) => l && a.indexOf(l) === i && l !== lang);
+          for (const l of tryLangs) {
+            try {
+              const b = await api.getAartiLangMedia(backendId, l);
+              const anyB = b && ((b.audio_versions && b.audio_versions.length) || b.video || b.thumbnail || b.sync || b.full_text);
+              if (anyB) { if (!cancel) { setResolvedLang(l); setAartiBundle(b); } return; }
+            } catch {}
+          }
+        }
+        setAartiBundle(bundle || null);
+      } catch { /* keep as null → fallback to thumbnail only */ }
+    })();
+    return () => { cancel = true; };
+  }, [backendId, isAarti, backendItem?.supported_languages, user?.preferred_language]);
+
+  // ---- Fetch audio sync metadata ----
+  // For non-Aarti items: fetch the single item-level /audio bundle.
+  // For Aarti: build audioMeta from the per-language aartiBundle (audio_versions + sync).
+  useEffect(() => {
+    let cancel = false;
+    if (!backendId) return;
+    if (isAarti) return; // aarti uses a separate effect below
+    (async () => {
+      try {
         const data = await api.getItemAudio(backendId);
         if (!cancel && data?.audio_url) {
-          // Resolve relative URL to full URL
           const fullUrl = data.audio_url.startsWith('http')
             ? data.audio_url
             : `${API_BASE_URL.replace(/\/api$/, '')}${data.audio_url}`;
@@ -70,7 +134,29 @@ export default function ContentDetailScreen({ navigation, route }) {
       } catch { /* no audio yet, fall back to TTS */ }
     })();
     return () => { cancel = true; };
-  }, [backendId]);
+  }, [backendId, isAarti]);
+
+  // Aarti-only: once aartiBundle loads, populate audioMeta so the existing
+  // variant picker + sync highlighter keep working unchanged.
+  useEffect(() => {
+    if (!isAarti || !aartiBundle) return;
+    const versions = aartiBundle.audio_versions || [];
+    if (!versions.length) { setAudioMeta(null); return; }
+    const primary = versions[0];
+    const resolveUrl = (u) => u?.startsWith('http') ? u : `${API_BASE_URL.replace(/\/api$/, '')}${u}`;
+    // The rest of the versions become "variants" (slot 2..N) for the variant chip bar.
+    const variants = versions.slice(1).map((v) => ({
+      slot: v.slot, label: v.label, url: resolveUrl(v.url), format: v.format,
+    }));
+    setAudioMeta({
+      audio_url: resolveUrl(primary.url),
+      format: primary.format,
+      duration_ms: aartiBundle.sync?.duration_ms,
+      sync_map: aartiBundle.sync?.sync_map || [],
+      variants,
+    });
+    setSelectedVariant('primary');
+  }, [isAarti, aartiBundle]);
 
   // Reset playback when variant changes
   useEffect(() => {
@@ -266,11 +352,16 @@ export default function ContentDetailScreen({ navigation, route }) {
         lines: Array.isArray(v.lines) ? v.lines : null,
       }));
     }
+    // Aarti fallback: render the language-specific full_text as a single block
+    if (isAarti && aartiBundle?.full_text) {
+      const parts = aartiBundle.full_text.split(/\n\n+/).map((s) => s.trim()).filter(Boolean);
+      return parts.map((text, i) => ({ verse_num: i + 1, text }));
+    }
     if (!item) return [];
-    // Fallback: split on blank lines
-    const parts = (item.text_hi || '').split(/\n\n+/).map((s) => s.trim()).filter(Boolean);
+    // Legacy fallback: split on blank lines from item.text_hi (mock content or legacy flat field)
+    const parts = (item.text_hi || item.full_text || '').split(/\n\n+/).map((s) => s.trim()).filter(Boolean);
     return parts.map((text, i) => ({ verse_num: i + 1, text }));
-  }, [audioMeta, item]);
+  }, [audioMeta, item, isAarti, aartiBundle]);
 
   if (!item) {
     return (
@@ -286,6 +377,15 @@ export default function ContentDetailScreen({ navigation, route }) {
   return (
     <SafeScreen>
       <ScreenHeader title={item.title_hi} subtitle={item.title_en || item.type_hi} onBack={() => navigation.goBack()} />
+
+      {/* Aarti-only: hero video player (or thumbnail fallback) */}
+      {isAarti && aartiBundle && (
+        <AartiHero
+          bundle={aartiBundle}
+          lang={resolvedLang}
+          langLabel={LANG_NATIVE[resolvedLang] || resolvedLang}
+        />
+      )}
 
       {/* Audio control bar */}
       <View style={styles.audioBar}>
@@ -326,7 +426,9 @@ export default function ContentDetailScreen({ navigation, route }) {
             testID="variant-chip-primary"
           >
             <Text style={[styles.variantChipText, selectedVariant === 'primary' && styles.variantChipTextActive]}>
-              डिफ़ॉल्ट
+              {isAarti && aartiBundle?.audio_versions?.[0]?.label
+                ? aartiBundle.audio_versions[0].label
+                : 'डिफ़ॉल्ट'}
             </Text>
           </TouchableOpacity>
           {audioMeta.variants.map((v) => (
@@ -518,4 +620,78 @@ const styles = StyleSheet.create({
   },
   variantChipText: { fontSize: 12, color: COLORS.textSecondary, fontWeight: '700' },
   variantChipTextActive: { color: '#FFF' },
+});
+
+
+/* ---- Native language labels ---- */
+const LANG_NATIVE = {
+  hi: 'हिन्दी', en: 'English', sa: 'संस्कृत', mr: 'मराठी',
+  gu: 'ગુજરાતી', ta: 'தமிழ்', te: 'తెలుగు', bn: 'বাংলা',
+};
+
+/* ---- Aarti hero: shows video if uploaded, else the language-specific
+ *       thumbnail image, else a neutral placeholder. The video is muted by
+ *       default (so the admin-uploaded audio drives the experience) and
+ *       lazy-loads on first render. ---- */
+function AartiHero({ bundle, lang, langLabel }) {
+  const [videoLoaded, setVideoLoaded] = React.useState(false);
+  if (!bundle) return null;
+  const resolveUrl = (u) => u?.startsWith('http') ? u : `${API_BASE_URL.replace(/\/api$/, '')}${u}`;
+  const video = bundle.video;
+  const thumb = bundle.thumbnail;
+
+  return (
+    <View style={heroStyles.wrap} testID={`aarti-hero-${lang}`}>
+      <View style={heroStyles.mediaBox}>
+        {video?.url ? (
+          <>
+            {!videoLoaded && thumb?.url && (
+              <Image source={{ uri: resolveUrl(thumb.url) }} style={heroStyles.media} resizeMode="cover" />
+            )}
+            <Video
+              source={{ uri: resolveUrl(video.url) }}
+              style={[heroStyles.media, { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }]}
+              resizeMode={ResizeMode.COVER}
+              useNativeControls
+              isMuted={true}
+              shouldPlay={false}
+              onReadyForDisplay={() => setVideoLoaded(true)}
+              testID={`aarti-video-${lang}`}
+            />
+          </>
+        ) : thumb?.url ? (
+          <Image
+            source={{ uri: resolveUrl(thumb.url) }}
+            style={heroStyles.media}
+            resizeMode="cover"
+            testID={`aarti-thumb-${lang}`}
+          />
+        ) : (
+          <View style={[heroStyles.media, heroStyles.placeholder]}>
+            <Text style={heroStyles.placeholderIcon}>🪔</Text>
+          </View>
+        )}
+      </View>
+      <View style={heroStyles.langBadge}>
+        <Text style={heroStyles.langBadgeText}>भाषा · {langLabel}</Text>
+      </View>
+    </View>
+  );
+}
+
+const heroStyles = StyleSheet.create({
+  wrap:       { paddingHorizontal: 14, paddingTop: 10 },
+  mediaBox:   {
+    width: '100%', aspectRatio: 16 / 9, borderRadius: 14, overflow: 'hidden',
+    backgroundColor: '#0F172A', position: 'relative',
+  },
+  media:      { width: '100%', height: '100%' },
+  placeholder:{ alignItems: 'center', justifyContent: 'center', backgroundColor: '#1A1208' },
+  placeholderIcon: { fontSize: 48 },
+  langBadge:  {
+    position: 'absolute', top: 18, right: 20,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10,
+  },
+  langBadgeText: { color: '#FFF', fontSize: 11, fontWeight: '700' },
 });
