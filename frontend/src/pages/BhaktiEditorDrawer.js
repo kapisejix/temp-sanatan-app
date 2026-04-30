@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   FileText, BookOpen, Music, Clock3, CheckCircle2, AlertCircle,
   Save, Loader2, X, Plus, Trash2, Edit3, Upload, Layers, GraduationCap,
-  ScrollText, Video as VideoIcon, Image as ImageIcon,
+  ScrollText, Video as VideoIcon, Image as ImageIcon, Download,
 } from 'lucide-react';
 
 /**
@@ -1531,6 +1531,7 @@ function AartiSyncTab({ item, api, lang, onChanged, setError, setStatus }) {
   const [jsonText, setJsonText] = useState('');
   const [saving, setSaving] = useState(false);
   const [parseErr, setParseErr] = useState('');
+  const [confirmOverwrite, setConfirmOverwrite] = useState(false);
   const fileInputRef = useRef(null);
 
   // --- Minimal LRC parser (reused locally so we can accept .lrc uploads
@@ -1655,6 +1656,47 @@ function AartiSyncTab({ item, api, lang, onChanged, setError, setStatus }) {
     } finally { setSaving(false); }
   };
 
+  // Existing sync is "non-empty" if it has at least one verse persisted.
+  const hasExistingSync = Array.isArray(existingSync.sync_map) && existingSync.sync_map.length > 0;
+
+  // Save click → if there is already a saved sync for this language, ask for
+  // explicit confirmation before we overwrite. Otherwise save straight away.
+  const requestSave = () => {
+    // Validate JSON early so the modal doesn't open on broken content.
+    try { JSON.parse(jsonText); }
+    catch (e) { setParseErr('Invalid JSON: ' + e.message); return; }
+    setParseErr('');
+    if (hasExistingSync) {
+      setConfirmOverwrite(true);
+    } else {
+      save();
+    }
+  };
+
+  const confirmAndSave = () => {
+    setConfirmOverwrite(false);
+    save();
+  };
+
+  // Download the currently loaded sync JSON as
+  // {content_title}_{language}_sync.json — uses in-memory state only.
+  const handleDownload = () => {
+    let pretty = jsonText;
+    try { pretty = JSON.stringify(JSON.parse(jsonText), null, 2); } catch { /* keep raw */ }
+    const rawTitle = item.title_en || item.title_hi || item.title || 'sync';
+    const safeTitle = String(rawTitle).trim().replace(/[^\w\u0900-\u097F\-]+/g, '_').replace(/^_+|_+$/g, '') || 'sync';
+    const filename = `${safeTitle}_${lang}_sync.json`;
+    const blob = new Blob([pretty], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    setStatus(`✓ Downloaded ${filename}`);
+  };
+
   const firstAudio = (bucket.audio_versions || [])[0];
 
   return (
@@ -1692,10 +1734,62 @@ function AartiSyncTab({ item, api, lang, onChanged, setError, setStatus }) {
                   data-testid={`aarti-sync-editor-${lang}`} spellCheck={false}
                   className="w-full px-3 py-2 bg-[#0F172A] text-[#E2E8F0] font-mono text-xs rounded-lg border border-[#1E293B]" />
         {parseErr && <p className="text-xs text-red-600">{parseErr}</p>}
-        <button onClick={save} disabled={saving} data-testid={`aarti-sync-save-${lang}`}
-                className="w-full bg-[#E95A34] text-white py-2 rounded-lg text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2">
-          {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save Sync
-        </button>
+        <div className="flex gap-2">
+          <button onClick={handleDownload}
+                  disabled={!jsonText}
+                  data-testid={`aarti-sync-download-${lang}`}
+                  title="Download the currently loaded sync JSON"
+                  className="flex-shrink-0 px-3 py-2 bg-[#F8F3F1] border border-[#E8E4E1] text-[#374652] rounded-lg text-sm font-semibold flex items-center gap-2 hover:bg-[#EDE3DD] disabled:opacity-50">
+            <Download size={14} /> Download
+          </button>
+          <button onClick={requestSave} disabled={saving} data-testid={`aarti-sync-save-${lang}`}
+                  className="flex-1 bg-[#E95A34] text-white py-2 rounded-lg text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2">
+            {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save Sync
+          </button>
+        </div>
+
+        {confirmOverwrite && (
+          <div
+            data-testid={`aarti-sync-confirm-modal-${lang}`}
+            className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4"
+            onClick={() => setConfirmOverwrite(false)}
+          >
+            <div
+              role="dialog"
+              aria-modal="true"
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white rounded-xl shadow-2xl w-full max-w-md border border-[#E8E4E1]"
+            >
+              <div className="flex items-start gap-3 p-5 border-b border-[#E8E4E1]">
+                <AlertCircle className="text-amber-500 shrink-0 mt-0.5" size={20} />
+                <div>
+                  <h4 className="text-sm font-semibold">Overwrite existing sync?</h4>
+                  <p className="text-xs text-[#7A8690] mt-1">
+                    A sync with <strong>{(existingSync.sync_map || []).length}</strong> verse(s) already
+                    exists for <strong>{langLabel(lang)}</strong>. Saving will permanently replace it.
+                    Consider clicking <em>Download</em> first to keep a backup.
+                  </p>
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 px-5 py-3 bg-[#FBF8F6] rounded-b-xl">
+                <button
+                  onClick={() => setConfirmOverwrite(false)}
+                  data-testid={`aarti-sync-confirm-cancel-${lang}`}
+                  className="px-4 py-1.5 rounded-lg text-sm border border-[#E8E4E1] bg-white hover:bg-[#F3EDEA]"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmAndSave}
+                  data-testid={`aarti-sync-confirm-ok-${lang}`}
+                  className="px-4 py-1.5 rounded-lg text-sm bg-[#E95A34] text-white font-semibold hover:bg-[#d24e2c]"
+                >
+                  Overwrite
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
       <div className="bg-white rounded-xl border border-[#E8E4E1] p-5 space-y-3">
         <h3 className="text-sm font-semibold">Live Preview</h3>

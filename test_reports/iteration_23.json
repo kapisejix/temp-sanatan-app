@@ -1,0 +1,59 @@
+{
+  "summary": "Iter23 — Verified the two new Aarti Sync additions in BhaktiEditorDrawer: (a) Download Current Sync button with correct filename pattern + disabled state, and (b) Confirm Overwrite Sync modal with Cancel / backdrop / invalid-JSON guard / no-existing-sync paths. All 8 sub-tests passed. The saved Hindi sync was NOT mutated — every confirmation path used Cancel/backdrop/invalid-JSON so no POST /sync fired during the run.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "verified_behaviours": [
+    "Login → /admin/arti-manager → edit-item-69f1e1a77488457efddb02b7 opens drawer and Audio Sync tab loads with non-empty JSON containing `verses` key.",
+    "Download button (aarti-sync-download-hi) triggered a browser download with suggested filename `Shri_Ganesh_Aarti_hi_sync.json` — matches pattern `*_hi_sync.json`. Saved file parses as valid JSON and contains `verses` (1 verse — the iter22 Test fixture).",
+    "Status banner '✓ Downloaded Shri_Ganesh_Aarti_hi_sync.json' renders after click (verified visually in screenshot).",
+    "Download button becomes disabled when editor textarea is cleared (disabled attribute set).",
+    "Save Sync (aarti-sync-save-hi) with existing sync opens `aarti-sync-confirm-modal-hi` containing the text 'Overwrite existing sync?'.",
+    "Cancel button closes the modal, no POST /sync fires, Save button is NOT stuck in saving/spinner state.",
+    "Clicking the backdrop of the modal closes it and no POST /sync fires.",
+    "Invalid JSON `{not json` → modal is NOT opened, inline error `Invalid JSON: Expected property name or '}' …` is rendered, no POST /sync fires.",
+    "Switching language to Marathi (mr) — no existing sync — Save path does NOT open the confirm modal (hasExistingSync=false). Used invalid JSON to avoid any actual save, confirmed 0 POST /sync.",
+    "No console errors. No React error overlay. Download icon / Blob download / modal portal all integrate cleanly."
+  ],
+  "test_evidence": {
+    "login": true,
+    "editor_has_verses": true,
+    "download_filename": "Shri_Ganesh_Aarti_hi_sync.json",
+    "filename_pattern_ok": true,
+    "download_json_has_verses": true,
+    "download_json_verses_count": 1,
+    "download_disabled_when_empty": true,
+    "modal_appears_on_save": true,
+    "modal_contains_overwrite_text": true,
+    "modal_closed_after_cancel": true,
+    "no_post_after_cancel": true,
+    "save_btn_not_spinner_after_cancel": true,
+    "modal_closed_on_backdrop": true,
+    "no_post_after_backdrop": true,
+    "modal_not_shown_on_invalid_json": true,
+    "invalid_json_error_shown": true,
+    "no_post_on_invalid_json": true,
+    "other_lang_tested": "mr",
+    "no_modal_on_no_existing_sync": true,
+    "no_post_on_other_lang_invalid": true,
+    "console_errors_count": 0
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "BhaktiEditorDrawer.js is now 1829 lines — already flagged historically; consider splitting into per-tab modules (AartiSyncTab, AartiAudioTab, AartiVideoTab, AartiThumbTab) to stay under the 700-line guideline. Not blocking for this iter.",
+    "handleDownload filename sanitizer regex `/[^\\w\\u0900-\\u097F\\-]+/g` correctly preserves Devanagari + word chars and dashes; tested title 'श्री गणेशजी की आरती' transliterated via `title_en` to 'Shri_Ganesh_Aarti' which is fine. If title_en is ever missing and only Devanagari is present, filename like `श्री_गणेशजी_की_आरती_hi_sync.json` would be used — some filesystems/browsers may not handle that gracefully, but it is an acceptable graceful-degrade path.",
+    "parseErr is cleared inside requestSave before the hasExistingSync branch, but the `save()` helper also re-validates JSON and clears parseErr — slight duplication, harmless."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (frontend-only iter)", "frontend": "100%"},
+  "test_credentials": "admin@sanatansaathi.com / SanatanAdmin@2026 (super_admin)",
+  "seed_data_creation": "None. Critically, Hindi sync was NOT overwritten — every confirm path used Cancel/backdrop or Invalid JSON to avoid POST /sync. User can safely restore original 5-verse Hindi sync as planned.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Both new features in AartiSyncTab are fully functional with correct data-testid coverage (aarti-sync-download-<lang>, aarti-sync-save-<lang>, aarti-sync-confirm-modal-<lang>, aarti-sync-confirm-cancel-<lang>, aarti-sync-confirm-ok-<lang>). The 'Overwrite' OK button (aarti-sync-confirm-ok-<lang>) path was NOT clicked during this run (to preserve existing Hindi sync). If a future iter needs to validate the actual overwrite POST, use a throwaway language bucket or explicitly allow mutation.",
+  "rca_of_the_issue": "n/a — this was a feature-addition verification iter, no bugs found."
+}
