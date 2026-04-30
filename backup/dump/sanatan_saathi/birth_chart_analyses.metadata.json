@@ -1,0 +1,1 @@
+{"indexes":[{"v":{"$numberInt":"2"},"key":{"_id":{"$numberInt":"1"}},"name":"_id_"}],"uuid":"75a680b5c4fe48b4af89cf5fa7b67ea9","collectionName":"birth_chart_analyses","type":"collection"}

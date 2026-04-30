@@ -1,0 +1,1 @@
+{"indexes":[{"v":{"$numberInt":"2"},"key":{"_id":{"$numberInt":"1"}},"name":"_id_"}],"uuid":"41d60e9b6d694786bddd6dca8b017242","collectionName":"katha_items","type":"collection"}

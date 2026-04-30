@@ -23,12 +23,31 @@ cp backend/.env.example   backend/.env
 cp frontend/.env.example  frontend/.env
 cp expo-app/.env.example  expo-app/.env
 ```
-Edit `backend/.env` and set at minimum:
-- `JWT_SECRET` — `python -c "import secrets;print(secrets.token_hex(32))"`
-- `ADMIN_EMAIL` / `ADMIN_PASSWORD` — your seed admin
-- `EMERGENT_LLM_KEY` — only if you use AI features (or follow `EMERGENT_DEPENDENCIES.md` to remove)
 
-> `MONGO_URL` and `DB_NAME` are **automatically overridden** inside the compose stack to point at the `mongo` container (`mongodb://mongo:27017`, db `sanatan_saathi`). You can leave the `.env` values as-is.
+> 🚀 **Shortcut**: `cp backend/.env.local backend/.env` — pre-configured
+> for the bundled MongoDB dump (`DB_NAME=sanatan_saathi`,
+> `MONGO_URL=mongodb://localhost:27017`). You still need to edit
+> `JWT_SECRET` and (optionally) `EMERGENT_LLM_KEY`.
+
+### Step 1.5 — restore the bundled MongoDB dump (optional but recommended)
+
+The repo ships a sanitized backup at `/backup/sanatan_saathi_dump.tar.gz`
+(30 collections, ~280 KB compressed, all PII masked):
+
+```bash
+tar xzf backup/sanatan_saathi_dump.tar.gz
+mongorestore --uri="mongodb://localhost:27017/sanatan_saathi" --drop ./dump/sanatan_saathi
+```
+
+Or use the JSON seed script (no `mongo-tools` required):
+
+```bash
+python seeds/seed.py
+```
+
+After either path you can log in with **`a***@example.com`** / **`Test@12345`**
+and a working Aarti (Shri Ganesh) appears in `/admin/arti-manager`.
+See [`BACKUP.md`](./BACKUP.md) for the full reference.
 
 ### Step 2 — bring it up
 ```bash

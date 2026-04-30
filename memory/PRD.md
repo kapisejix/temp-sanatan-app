@@ -333,3 +333,18 @@ Multilingual spiritual platform: React Admin Panel + FastAPI Backend + Expo Mobi
 - `docker-compose.yml` overrides `MONGO_URL=mongodb://mongo:27017` and `DB_NAME=sanatan_saathi` so the same `.env` works for native dev and Docker.
 - `docs/SETUP.md` rewritten with **Path A (Docker)** + **Path B (Native)**, including ports table, common ops, troubleshooting, and explicit assumptions list.
 - Verified compose YAML parses cleanly (4 services, 3 named volumes, port mappings sane). **Not actually run** in this preview (Docker is not available in the Emergent Kubernetes pod) — user must `docker compose up` locally.
+
+## Session 25 (Feb 30 2026) — DB backup, JSON seeds, GitHub push prep (no code changes)
+
+**Goal:** ship a complete portable database snapshot + fallback seed script. Strictly export/backup work.
+
+- `/app/backup/sanatan_saathi_dump.tar.gz` — 184 KB compressed mongodump archive of 30 collections, renamed to canonical DB name `sanatan_saathi`. PII fields masked: emails (`first-letter***@example.com`), phones (`+91-XXXX-XX{last4}`), `password_hash` (bcrypt of `Test@12345`), `last_login_ip` (`0.0.0.0`). Runtime collections (`login_attempts`, `security_events`, `token_blacklist`, `otp_store`, `public_chat_limits`, `analytics_events`) dropped.
+- `/app/backup/dump/sanatan_saathi/*.bson` — uncompressed dump alongside the tarball for direct `mongorestore`.
+- `/app/seeds/seed.py` — pymongo-based fallback that imports 6 canonical collections (305 docs total): admin_users (1), app_users (12), content_items (9), content_verses (136), verse_meanings (146), bhakti_items (1).
+- `/app/seeds/*.json` — masked exports for the 6 collections.
+- `/app/seeds/README.md` — restore instructions.
+- `/app/docs/BACKUP.md` — full backup/restore reference with verified counts.
+- `/app/backend/.env.local` — pre-configured for local Mongo + DB name `sanatan_saathi`.
+- Round-trip verified: archive extracts → restores → 30 collections + matching counts; seed.py runs cleanly → 305 docs across 6 collections; Aarti `languages.hi.sync.sync_map` preserved.
+- **Default restored credentials**: `a***@example.com` / `Test@12345` (admin) and `m***@example.com` etc / `Test@12345` (mobile). Document instructs user to change on first login.
+- **GitHub push**: directed user to the Emergent "Save to GitHub" button per platform policy. Cannot push from agent.

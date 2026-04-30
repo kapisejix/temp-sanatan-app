@@ -55,3 +55,9 @@ The testing agent's Save Sync run **overwrote the Hindi sync_map** on `aarti_id=
 - P1 — global axios interceptor to swallow `/cdn-cgi/rum` failures
 - P2 — uniform per-tab save status badges (dot/asterisk)
 - Mobile STT, Offline downloads, Dark mode (P3)
+- **DB backup + seeds + GitHub push prep** → ✅ DONE (this session, no code changes)
+  - `/backup/sanatan_saathi_dump.tar.gz` (184 KB, 30 collections, PII masked)
+  - `/seeds/seed.py` + 6 JSON files (305 docs, fallback path)
+  - `/docs/BACKUP.md` + `/backend/.env.local`
+  - Round-trip verified for both restore paths
+  - GitHub push: use the platform's **Save to GitHub** button

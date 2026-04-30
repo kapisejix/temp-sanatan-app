@@ -27,10 +27,11 @@
    1. [`docs/BLUEPRINT.md`](docs/BLUEPRINT.md) — product spec
    2. [`docs/ONBOARDING.md`](docs/ONBOARDING.md) — Day-1 developer guide
    3. [`docs/SETUP.md`](docs/SETUP.md) — local install + run
-   4. [`docs/API.md`](docs/API.md) — endpoint catalog (~190 routes)
-   5. [`docs/DATA_SCHEMA.md`](docs/DATA_SCHEMA.md) — MongoDB collections
-   6. [`docs/EMERGENT_DEPENDENCIES.md`](docs/EMERGENT_DEPENDENCIES.md) — running off the Emergent platform
-   7. [`docs/current_status.md`](docs/current_status.md) — what's in flight
+   4. [`docs/BACKUP.md`](docs/BACKUP.md) — MongoDB dump + seed script
+   5. [`docs/API.md`](docs/API.md) — endpoint catalog (~190 routes)
+   6. [`docs/DATA_SCHEMA.md`](docs/DATA_SCHEMA.md) — MongoDB collections
+   7. [`docs/EMERGENT_DEPENDENCIES.md`](docs/EMERGENT_DEPENDENCIES.md) — running off the Emergent platform
+   8. [`docs/current_status.md`](docs/current_status.md) — what's in flight
 
 2. **Copy the env templates**:
    ```bash

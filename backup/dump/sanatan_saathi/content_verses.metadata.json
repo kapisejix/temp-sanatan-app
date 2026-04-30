@@ -1,0 +1,1 @@
+{"indexes":[{"v":{"$numberInt":"2"},"key":{"_id":{"$numberInt":"1"}},"name":"_id_"}],"uuid":"bbffe89ea2484a5b89a765a44f43fe4c","collectionName":"content_verses","type":"collection"}
