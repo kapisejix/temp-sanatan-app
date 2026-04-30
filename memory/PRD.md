@@ -255,3 +255,24 @@ Multilingual spiritual platform: React Admin Panel + FastAPI Backend + Expo Mobi
 - `POST /api/admin/translate/drafts/{verse_id}/{language}/publish` — publish to verse_meanings + content_verses
 - `DELETE /api/admin/translate/drafts/{verse_id}/{language}` — delete draft
 - `GET /api/admin/translate/languages` — supported language list
+
+
+---
+
+## Session 21 (Feb 30 2026) — P0 stabilization for Aarti Editor
+
+**Goal:** verify-only — no new features, no redesign.
+
+- `BhaktiEditorDrawer.FullTextTab` `dirty` state fully wired:
+  - `setDirty(true)` on textarea `onChange`
+  - `setDirty(false)` after successful PUT `/api/content/items/{id}`
+  - "Unsaved changes" badge in header (`data-testid=fulltext-unsaved-badge`)
+  - Save button label switches between `Save Full Text` / `Save Full Text *` / `Saving…`
+- `BhaktiEditorDrawer.AartiSyncTab` LRC + JSON upload re-confirmed working (parser at lines 1530-1563, handler at 1565-1601, file input at 1669-1677).
+- `/app/BLUEPRINT.md` saved as canonical product spec (Phase 1/2/3 roadmap, data model, API contracts).
+- `/app/current_status.md` created for next agent handoffs.
+- Verified by `testing_agent_v3_fork` → `/app/test_reports/iteration_22.json` (100% pass: 5/5 P0 + 4/4 smoke tabs).
+
+**Side-effect:** the testing agent's Save Sync run overwrote the Hindi sync of the only Aarti (`69f1e1a77488457efddb02b7`) with a 1-verse "Test" fixture. Re-upload before publishing Aarti to mobile.
+
+**Explicitly deferred** (user directive): P1 Cloudflare RUM suppression, P2 per-tab save indicators, Auto-Sync LLM.
