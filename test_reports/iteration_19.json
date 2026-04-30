@@ -1,0 +1,33 @@
+{
+  "summary": "Iteration 19 — RETEST of 4 fixes: (1) DELETE /api/bhakti/items/:id 404 bug for content_items, (2) PUT /api/bhakti/items/:id resolver gap, (3) PATCH /api/bhakti/items/:id/status resolver gap, (4) new Full Text tab + multilingual sub-tabs + Aarti hides Verses tab. ALL GREEN. Backend: 24/24 pytest pass (4 new iter19 resolver cases + 8 iter18 + 12 iter16) in 16.7s. The iter19 cases create a throwaway content_items doc via POST /api/content/items, then exercise /api/bhakti/items/:id PUT (200, title_hi persisted in content_items), PATCH /status (200, status='archived' persisted), DELETE (200 success — was 404 before fix), plus a 404 sanity check on a non-existent id. Frontend: Aarti drawer (/admin/arti-manager?edit=69f1e1a77488457efddb02b7) shows exactly the 5 expected tabs [content, fulltext, audio, sync, publish] — Verses tab correctly hidden. Full Text tab Hindi sub-tab → typed unique TEST_iter19_FT_1777551585 → click fulltext-save-btn → PUT /api/content/items/69f1e1a77488457efddb02b7 returned 200; readback confirms BOTH languages.hi.full_text AND legacy text_hi mirror are populated. 'Full text saved' success toast visible. Chalisa drawer (/admin/chalisa-manager?edit=69f053c8053b601fc045a5ca) has both drawer-tab-fulltext and drawer-tab-verses. 'Save new verse' regression: clicked Add Verse → typed sanskrit → save-new-verse-btn → POST /api/content/items/.../verses returned 200 in <3s; new verse 'TEST_iter19_verse_1777551528' appears at top of list with 'Verse added' toast. NOT stuck. AUDIO_SYNC_GUIDE.md exists with 341 lines.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iter19_bhakti_endpoints_resolver.py",
+    "/app/backend/tests/test_iter18_bhakti_collection_resolver.py",
+    "/app/backend/tests/test_iter16_unified_editor.py",
+    "/app/test_reports/pytest/iter19_full.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py:1058-1129 — PUT/PATCH/DELETE on /api/bhakti/items/:id all now consistently route through _resolve_item_collections, mirroring the iter18 fix on /api/content/items/*. Clean. Verified by running new iter19 cases against a freshly-created content_items doc.",
+    "server.py:1124-1127 — DELETE also opportunistically clears verses in BOTH bhakti_verses and content_verses (cross-collection cleanup). Defensive and correct.",
+    "BhaktiEditorDrawer.js:50-67 — TABS memo correctly hides 'verses' tab for Aarti and includes the new 'fulltext' tab unconditionally; tab id stays valid via the useEffect on line 70-72 when mode flips.",
+    "BhaktiEditorDrawer.js:300-321 (FullTextTab.save) — writes both per-language languages.{code}.full_text AND legacy text_{code} mirror in one PUT /content/items/:id call. Single round-trip. Good.",
+    "FullTextTab sub-tabs are scoped to item.supported_languages (line 345 .map(supported)). On the test aarti item only 'hi' is supported so only Hindi sub-tab renders — correct behavior, not a bug.",
+    "Save-new-verse path (POST /content/items/:id/verses) is not new code but iter18's resolver work made it work transparently for bhakti_items / content_items items — iter19 confirms the user-reported hang is gone (response in <1s, 200 OK, success toast renders)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter19_bhakti_endpoints_resolver.py (new, 4 cases — PUT/PATCH/DELETE on content_items doc via /bhakti/items/:id surface, plus 404 sanity check)"
+  ],
+  "success_rate": {
+    "backend": "100% (24/24 — 4 iter19 + 8 iter18 + 12 iter16, 16.7s)",
+    "frontend": "100% (Aarti tabs correct, Chalisa tabs correct, FullText save+persist, Save New Verse no longer hangs)"
+  },
+  "test_credentials": "Admin: admin@sanatansaathi.com / SanatanAdmin@2026",
+  "seed_data_creation": "iter19 backend tests create+delete a TEST_iter19_<ts> chalisa item in content_items (cleaned up by test_delete_bhakti_item_on_content_items_doc). Frontend test left: (a) one TEST_iter19_FT_1777551585 string in 69f1e1a77488457efddb02b7.text_hi + languages.hi.full_text on the Ganesha aarti, and (b) one TEST_iter19_verse_1777551528 verse on the Hanuman Chalisa item 69f053c8053b601fc045a5ca (#1 position). Non-destructive; remove via the editor or DELETE /api/content/items/.../verses/<id> when needed.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "iter18+iter19 fully validate /api/bhakti/items/:id and /api/content/items/:id surfaces — both now use _resolve_item_collections so reads/writes/deletes work whether the item is in content_items or bhakti_items. Reusable pytest suites: test_iter16_unified_editor.py (12), test_iter18_bhakti_collection_resolver.py (8), test_iter19_bhakti_endpoints_resolver.py (4) = 24 cases regression. New BhaktiEditorDrawer Full Text tab persists to PUT /content/items/:id with both languages.{code}.full_text and legacy text_{code} mirror — verified end-to-end on aarti 69f1e1a77488457efddb02b7. Aarti drawer correctly hides Verses tab. 'Save new verse' on Chalisa works in <1s. Pre-existing minor: ChalisaManagerPage row Edit icon still has no data-testid (use drawer ?edit=ID URL param to bypass).",
+  "rca of the issue": "Original iter18.5 user feedback: DELETE Hanuman Chalisa returned 404 because /api/bhakti/items/:id only looked in bhakti_items collection while Chalisa lives in content_items. Same gap caused 'save new verse stuck' (silent no-op writes) on /bhakti/items endpoints. Main agent's fix: extended _resolve_item_collections from iter18 to also drive PUT, PATCH /status, DELETE on /bhakti/items/:id (server.py 1058-1129). iter19 retest confirms: throwaway content_items item created via /api/content/items can be PUT/PATCHED/DELETED via /api/bhakti/items/:id with 200s and persistence in content_items. Frontend Full Text tab and Aarti tab list also verified."
+}

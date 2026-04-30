@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   FileText, BookOpen, Music, Clock3, CheckCircle2, AlertCircle,
   Save, Loader2, X, Plus, Trash2, Edit3, Upload, Layers, GraduationCap,
+  ScrollText,
 } from 'lucide-react';
 
 /**
@@ -49,9 +50,13 @@ export default function BhaktiEditorDrawer({ api, itemId, category, open, onClos
   const TABS = useMemo(() => {
     const base = [
       { id: 'content', label: 'Content', icon: FileText },
-      { id: 'verses', label: 'Verses', icon: BookOpen },
-      { id: 'audio', label: 'Audio', icon: Music },
+      { id: 'fulltext', label: 'Full Text', icon: ScrollText },
     ];
+    // Aarti is consumption-only (one big textarea). Hide verse-by-verse tab.
+    if (!isAarti) {
+      base.push({ id: 'verses', label: 'Verses', icon: BookOpen });
+    }
+    base.push({ id: 'audio', label: 'Audio', icon: Music });
     if (mode === 'expert' || isAarti) {
       base.push({ id: 'sync', label: 'Audio Sync', icon: Clock3 });
     } else {
@@ -237,6 +242,9 @@ export default function BhaktiEditorDrawer({ api, itemId, category, open, onClos
               {activeTab === 'content' && (
                 <ContentTab item={item} api={api} onSaved={(d) => { setItem(d); setStatus('Content saved'); onChange && onChange(); }} setError={setError} />
               )}
+              {activeTab === 'fulltext' && (
+                <FullTextTab item={item} api={api} onSaved={(d) => { setItem(d); setStatus('Full text saved'); onChange && onChange(); }} setError={setError} />
+              )}
               {activeTab === 'verses' && (
                 <VersesTab item={item} api={api} onChanged={refreshItem} setError={setError} setStatus={setStatus} supported={item.supported_languages || ['hi']} />
               )}
@@ -261,6 +269,123 @@ export default function BhaktiEditorDrawer({ api, itemId, category, open, onClos
       <style>{`
         @keyframes slideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
       `}</style>
+    </div>
+  );
+}
+
+/* ---------------- Full Text Tab (multilingual single-textarea authoring) ---------------- */
+function FullTextTab({ item, api, onSaved, setError }) {
+  const supported = item.supported_languages && item.supported_languages.length
+    ? item.supported_languages : ['hi', 'en'];
+  const [activeLang, setActiveLang] = useState(supported[0]);
+  const [saving, setSaving] = useState(false);
+
+  // Build initial state from item.languages.{lang}.full_text + legacy `full_text`
+  const buildInitial = () => {
+    const out = {};
+    for (const code of supported) {
+      const fromMap = (item.languages && item.languages[code] && item.languages[code].full_text) || '';
+      // Hindi falls back to legacy `full_text` field, English to `full_text_en` etc. when present
+      const legacyKey = code === 'hi' ? 'full_text' : `full_text_${code}`;
+      out[code] = fromMap || item[legacyKey] || '';
+    }
+    return out;
+  };
+  const [texts, setTexts] = useState(buildInitial);
+
+  const save = async () => {
+    setSaving(true);
+    setError('');
+    try {
+      // Merge into hybrid multilingual `languages` map (non-breaking, preserves existing keys)
+      const nextLanguages = { ...(item.languages || {}) };
+      const body = { languages: nextLanguages };
+      for (const code of supported) {
+        nextLanguages[code] = {
+          ...(nextLanguages[code] || {}),
+          full_text: texts[code] || '',
+        };
+        // Mirror to legacy flat fields (text_hi / text_en / text_sa / etc.) so the
+        // existing mobile renderer (`item.text_hi`) picks up the full text without changes.
+        body[`text_${code}`] = texts[code] || '';
+      }
+      // Also mirror Hindi to the generic `full_text` field used by some legacy readers.
+      if (texts.hi !== undefined) body.full_text = texts.hi;
+      const { data } = await api.put(`/content/items/${item._id}`, body);
+      onSaved(data);
+    } catch (e) {
+      setError(e?.response?.data?.detail || 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const wordCount = (texts[activeLang] || '').trim().split(/\s+/).filter(Boolean).length;
+  const charCount = (texts[activeLang] || '').length;
+
+  return (
+    <div className="bg-white rounded-xl border border-[#E8E4E1] overflow-hidden" data-testid="drawer-fulltext-tab">
+      <div className="flex items-center justify-between px-5 py-3 border-b border-[#E8E4E1] bg-[#FEF0EC]">
+        <div>
+          <h3 className="text-sm font-semibold flex items-center gap-2">
+            <ScrollText size={16} /> Complete Text — Multilingual
+          </h3>
+          <p className="text-[11px] text-[#7A8690] mt-0.5">
+            Paste the entire {item.category || 'item'} (all dohas + verses + closing) here.
+            Each language has its own textarea. Mobile uses this when verse-by-verse data is missing.
+          </p>
+        </div>
+        <span className="text-[11px] text-[#7A8690]">
+          {wordCount} word(s) · {charCount} char(s)
+        </span>
+      </div>
+
+      {/* Language sub-tabs */}
+      <div className="flex border-b border-[#E8E4E1] bg-[#F8F3F1] overflow-x-auto">
+        {supported.map((code) => {
+          const l = LANGUAGES.find((x) => x.code === code) || { code, label_en: code };
+          return (
+            <button
+              key={code}
+              onClick={() => setActiveLang(code)}
+              data-testid={`fulltext-lang-${code}`}
+              className={`px-4 py-2 text-sm font-medium whitespace-nowrap border-b-2 transition-colors ${
+                activeLang === code ? 'border-[#E95A34] text-[#E95A34] bg-white' : 'border-transparent text-[#7A8690]'
+              }`}
+            >
+              {l.label_en} <span className="opacity-60 ml-1">{l.label}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="p-5 space-y-3">
+        <textarea
+          value={texts[activeLang] || ''}
+          onChange={(e) => setTexts({ ...texts, [activeLang]: e.target.value })}
+          rows={22}
+          spellCheck={false}
+          lang={activeLang}
+          placeholder={`Paste the entire ${item.category || 'item'} text in ${activeLang.toUpperCase()} here.\n\nAll dohas, chaupais, mantras — anything goes. Each line on a new line.`}
+          data-testid={`fulltext-textarea-${activeLang}`}
+          className="w-full px-3 py-2 bg-[#F8F3F1] border border-[#E8E4E1] rounded-lg text-sm leading-relaxed focus:outline-none focus:border-[#E95A34]"
+          style={{ fontFamily: activeLang === 'hi' || activeLang === 'sa' ? "'Noto Sans Devanagari', system-ui" : 'inherit' }}
+        />
+
+        <div className="flex justify-between items-center pt-2 border-t border-[#E8E4E1]">
+          <p className="text-[11px] text-[#7A8690] italic">
+            Tip: Use blank lines between verses if you also plan to use the Verses tab — the importer can split on those.
+          </p>
+          <button
+            onClick={save}
+            disabled={saving}
+            data-testid="fulltext-save-btn"
+            className="flex items-center gap-2 px-5 py-2 bg-[#E95A34] text-white rounded-lg text-sm font-semibold hover:bg-[#d24e2c] disabled:opacity-60"
+          >
+            {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save Full Text
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

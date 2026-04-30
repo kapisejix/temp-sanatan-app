@@ -1063,12 +1063,15 @@ async def update_bhakti_item(item_id: str, request: Request, admin: dict = Depen
     body.pop("created_at", None)
     body.pop("created_by", None)
     body["updated_at"] = datetime.now(timezone.utc).isoformat()
-    
+
+    # Resolve which collection actually stores this item (legacy chalisa items
+    # live in content_items, newer bhakti items live in bhakti_items).
+    _item, item_coll, vcoll = await _resolve_item_collections(item_id)
+
     # Update verses if provided
     verses = body.pop("verses", None)
     if verses is not None:
-        # Delete existing verses and re-insert
-        await db.bhakti_verses.delete_many({"item_id": item_id})
+        await db[vcoll].delete_many({"item_id": item_id})
         for i, verse in enumerate(verses):
             verse_doc = {
                 "item_id": item_id,
@@ -1082,14 +1085,14 @@ async def update_bhakti_item(item_id: str, request: Request, admin: dict = Depen
                 "audio_end_ms": verse.get("audio_end_ms", 0),
                 "is_active": True
             }
-            await db.bhakti_verses.insert_one(verse_doc)
+            await db[vcoll].insert_one(verse_doc)
         body["total_verses"] = len(verses)
-    
-    await db.bhakti_items.update_one({"_id": ObjectId(item_id)}, {"$set": body})
-    updated = await db.bhakti_items.find_one({"_id": ObjectId(item_id)})
+
+    await db[item_coll].update_one({"_id": ObjectId(item_id)}, {"$set": body})
+    updated = await db[item_coll].find_one({"_id": ObjectId(item_id)})
     if not updated:
         raise HTTPException(status_code=404, detail="Item not found")
-    
+
     await log_audit("bhakti_item_updated", admin.get("admin_id"), admin.get("email"), {"item_id": item_id})
     return serialize_doc(updated)
 
@@ -1099,23 +1102,29 @@ async def update_bhakti_status(item_id: str, request: Request, admin: dict = Dep
     new_status = body.get("status")
     if new_status not in ["draft", "published", "archived"]:
         raise HTTPException(status_code=400, detail="Invalid status")
-    
-    await db.bhakti_items.update_one(
+
+    _item, item_coll, _vcoll = await _resolve_item_collections(item_id)
+    await db[item_coll].update_one(
         {"_id": ObjectId(item_id)},
         {"$set": {"status": new_status, "updated_at": datetime.now(timezone.utc).isoformat()}}
     )
-    
+
     await log_audit("bhakti_status_changed", admin.get("admin_id"), admin.get("email"), {"item_id": item_id, "new_status": new_status})
     return {"success": True, "status": new_status}
 
 @api_router.delete("/bhakti/items/{item_id}")
 async def delete_bhakti_item(item_id: str, admin: dict = Depends(require_role(["super_admin"]))):
-    # Delete item and its verses
-    result = await db.bhakti_items.delete_one({"_id": ObjectId(item_id)})
+    """Delete a bhakti item from whichever collection actually stores it
+    (content_items legacy or bhakti_items newer)."""
+    _item, item_coll, vcoll = await _resolve_item_collections(item_id)
+    result = await db[item_coll].delete_one({"_id": ObjectId(item_id)})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Item not found")
-    
-    await db.bhakti_verses.delete_many({"item_id": item_id})
+
+    await db[vcoll].delete_many({"item_id": item_id})
+    # Also clean orphaned verses in the OTHER collection just in case
+    other_vcoll = "bhakti_verses" if vcoll == "content_verses" else "content_verses"
+    await db[other_vcoll].delete_many({"item_id": item_id})
     await log_audit("bhakti_item_deleted", admin.get("admin_id"), admin.get("email"), {"item_id": item_id})
     return {"success": True}
 
