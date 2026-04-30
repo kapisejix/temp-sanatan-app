@@ -623,6 +623,28 @@ async def dashboard_stats(admin: dict = Depends(require_role(["super_admin", "co
 
 # ===================== CONTENT ITEMS CRUD =====================
 
+async def _resolve_item_collections(item_id: str):
+    """Return (item_doc, items_coll_name, verses_coll_name) for a given item id.
+
+    Most content lives in `content_items` + `content_verses`. The legacy
+    Bhakti Category manager seeded many items into `bhakti_items` + `bhakti_verses`.
+    This helper lets all downstream endpoints (edit, verses, audio, sync, publish
+    validation) work transparently against either collection without the admin
+    needing to know which one stores the item.
+    """
+    try:
+        oid = ObjectId(item_id)
+    except Exception:
+        return None, "content_items", "content_verses"
+    doc = await db.content_items.find_one({"_id": oid})
+    if doc:
+        return doc, "content_items", "content_verses"
+    doc = await db.bhakti_items.find_one({"_id": oid})
+    if doc:
+        return doc, "bhakti_items", "bhakti_verses"
+    return None, "content_items", "content_verses"
+
+
 @api_router.get("/content/items")
 async def list_content_items(category: Optional[str] = None, status: Optional[str] = None, skip: int = 0, limit: int = 50):
     query = {}
@@ -636,7 +658,7 @@ async def list_content_items(category: Optional[str] = None, status: Optional[st
 
 @api_router.get("/content/items/{item_id}")
 async def get_content_item(item_id: str):
-    item = await db.content_items.find_one({"_id": ObjectId(item_id)})
+    item, _coll, _vcoll = await _resolve_item_collections(item_id)
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     return serialize_doc(item)
@@ -684,14 +706,16 @@ async def update_content_item(item_id: str, request: Request, admin: dict = Depe
     body = await request.json()
     body.pop("_id", None)
     body["updated_at"] = datetime.now(timezone.utc).isoformat()
-    await db.content_items.update_one({"_id": ObjectId(item_id)}, {"$set": body})
-    updated = await db.content_items.find_one({"_id": ObjectId(item_id)})
+    _item, coll, _ = await _resolve_item_collections(item_id)
+    await db[coll].update_one({"_id": ObjectId(item_id)}, {"$set": body})
+    updated = await db[coll].find_one({"_id": ObjectId(item_id)})
     return serialize_doc(updated)
 
 @api_router.delete("/content/items/{item_id}")
 async def delete_content_item(item_id: str, admin: dict = Depends(require_role(["super_admin"]))):
-    await db.content_items.delete_one({"_id": ObjectId(item_id)})
-    await db.content_verses.delete_many({"item_id": item_id})
+    _item, coll, vcoll = await _resolve_item_collections(item_id)
+    await db[coll].delete_one({"_id": ObjectId(item_id)})
+    await db[vcoll].delete_many({"item_id": item_id})
     return {"message": "Deleted"}
 
 @api_router.patch("/content/items/{item_id}/status")
@@ -700,18 +724,18 @@ async def update_item_status(item_id: str, request: Request, admin: dict = Depen
     status = body.get("status")
     if status not in ["draft", "published", "archived"]:
         raise HTTPException(status_code=400, detail="Invalid status")
+    item, coll, vcoll = await _resolve_item_collections(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
     # Validate on publish — require title, primary language, and >=1 verse
     if status == "published":
-        item = await db.content_items.find_one({"_id": ObjectId(item_id)})
-        if not item:
-            raise HTTPException(status_code=404, detail="Item not found")
         missing = []
         if not (item.get("title_hi") or item.get("title_en") or item.get("title_sa")):
             missing.append("title (hi/en/sa)")
         supported = item.get("supported_languages") or []
         if not supported:
             missing.append("supported_languages")
-        verse_count = await db.content_verses.count_documents({"item_id": item_id})
+        verse_count = await db[vcoll].count_documents({"item_id": item_id})
         if verse_count < 1:
             missing.append("at least 1 verse")
         if missing:
@@ -719,20 +743,17 @@ async def update_item_status(item_id: str, request: Request, admin: dict = Depen
                 status_code=422,
                 detail=f"Cannot publish — missing: {', '.join(missing)}"
             )
-    await db.content_items.update_one({"_id": ObjectId(item_id)}, {"$set": {"status": status, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    await db[coll].update_one({"_id": ObjectId(item_id)}, {"$set": {"status": status, "updated_at": datetime.now(timezone.utc).isoformat()}})
     return {"message": f"Status updated to {status}"}
 
 
 @api_router.get("/content/items/{item_id}/publish-check")
 async def publish_check(item_id: str, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
     """Return a validation checklist for the Publish tab — does not mutate state."""
-    try:
-        item = await db.content_items.find_one({"_id": ObjectId(item_id)})
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid item_id")
+    item, _coll, vcoll = await _resolve_item_collections(item_id)
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
-    verse_count = await db.content_verses.count_documents({"item_id": item_id})
+    verse_count = await db[vcoll].count_documents({"item_id": item_id})
     audio_sync = item.get("audio_sync") or {}
     checks = [
         {"key": "title", "label": "Title (Hi/En/Sa)",
@@ -760,7 +781,8 @@ async def publish_check(item_id: str, admin: dict = Depends(require_role(["super
 
 @api_router.get("/content/items/{item_id}/verses")
 async def get_verses(item_id: str):
-    verses = await db.content_verses.find({"item_id": item_id}).sort("sort_order", 1).to_list(1000)
+    _item, _coll, vcoll = await _resolve_item_collections(item_id)
+    verses = await db[vcoll].find({"item_id": item_id}).sort("sort_order", 1).to_list(1000)
     return [serialize_doc(v) for v in verses]
 
 class VerseCreate(BaseModel):
@@ -772,6 +794,7 @@ class VerseCreate(BaseModel):
 
 @api_router.post("/content/items/{item_id}/verses")
 async def create_verse(item_id: str, req: VerseCreate, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
+    _item, coll, vcoll = await _resolve_item_collections(item_id)
     doc = {
         **req.model_dump(),
         "item_id": item_id,
@@ -780,17 +803,33 @@ async def create_verse(item_id: str, req: VerseCreate, admin: dict = Depends(req
         "audio_start_ms": 0,
         "audio_end_ms": 0
     }
-    result = await db.content_verses.insert_one(doc)
+    result = await db[vcoll].insert_one(doc)
     doc["_id"] = str(result.inserted_id)
-    await db.content_items.update_one({"_id": ObjectId(item_id)}, {"$inc": {"total_verses": 1}})
+    await db[coll].update_one({"_id": ObjectId(item_id)}, {"$inc": {"total_verses": 1}})
     return doc
+
+async def _resolve_verse_collection(verse_id: str):
+    """Return (verse_doc, collection_name) — searches content_verses first, then bhakti_verses."""
+    try:
+        oid = ObjectId(verse_id)
+    except Exception:
+        return None, "content_verses"
+    doc = await db.content_verses.find_one({"_id": oid})
+    if doc:
+        return doc, "content_verses"
+    doc = await db.bhakti_verses.find_one({"_id": oid})
+    if doc:
+        return doc, "bhakti_verses"
+    return None, "content_verses"
+
 
 @api_router.put("/content/verses/{verse_id}")
 async def update_verse(verse_id: str, request: Request, admin: dict = Depends(require_role(["super_admin", "content_admin"]))):
     body = await request.json()
     body.pop("_id", None)
-    await db.content_verses.update_one({"_id": ObjectId(verse_id)}, {"$set": body})
-    updated = await db.content_verses.find_one({"_id": ObjectId(verse_id)})
+    _v, vcoll = await _resolve_verse_collection(verse_id)
+    await db[vcoll].update_one({"_id": ObjectId(verse_id)}, {"$set": body})
+    updated = await db[vcoll].find_one({"_id": ObjectId(verse_id)})
     return serialize_doc(updated)
 
 @api_router.get("/content/verses/{verse_id}/meanings")
@@ -5662,10 +5701,7 @@ async def upload_item_audio(
         with a label (e.g. "Male", "Female"). The primary sync_map is shared by all variants.
     """
     # Validate item exists
-    try:
-        item_doc = await db.content_items.find_one({"_id": ObjectId(item_id)})
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid item_id")
+    item_doc, item_coll, _vcoll = await _resolve_item_collections(item_id)
     if not item_doc:
         raise HTTPException(status_code=404, detail="Item not found")
 
@@ -5735,7 +5771,7 @@ async def upload_item_audio(
             "uploaded_at": now,
         })
         variants.sort(key=lambda v: v["slot"])
-        await db.content_items.update_one(
+        await db[item_coll].update_one(
             {"_id": ObjectId(item_id)},
             {"$set": {"audio_sync.variants": variants, "updated_at": now}}
         )
@@ -5754,7 +5790,7 @@ async def upload_item_audio(
         "uploaded_at": now,
         "uploaded_by": admin["_id"],
     }
-    await db.content_items.update_one(
+    await db[item_coll].update_one(
         {"_id": ObjectId(item_id)},
         {"$set": {"audio_sync": audio_meta, "audio_url": audio_url, "updated_at": now}}
     )
@@ -5775,10 +5811,7 @@ async def delete_item_audio_variant(
     """Delete a specific Expert-mode audio variant (slot 1..4)."""
     if slot < 1 or slot > 4:
         raise HTTPException(status_code=400, detail="slot must be 1..4")
-    try:
-        item = await db.content_items.find_one({"_id": ObjectId(item_id)}, {"audio_sync": 1})
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid item_id")
+    item, item_coll, _vcoll = await _resolve_item_collections(item_id)
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     variants = list((item.get("audio_sync") or {}).get("variants") or [])
@@ -5792,7 +5825,7 @@ async def delete_item_audio_variant(
                 p.unlink()
             except Exception:
                 pass
-    await db.content_items.update_one(
+    await db[item_coll].update_one(
         {"_id": ObjectId(item_id)},
         {"$set": {"audio_sync.variants": kept, "updated_at": datetime.now(timezone.utc).isoformat()}}
     )
@@ -5810,10 +5843,7 @@ async def update_item_sync_map(
     Body: {audio_file?, duration_ms?, verses: [{verse_id, start_ms, end_ms, lines:[...]}]}
     or legacy: [{verse_num, start_ms, end_ms, text, lines?}]
     """
-    try:
-        item = await db.content_items.find_one({"_id": ObjectId(item_id)})
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid item_id")
+    item, item_coll, _vcoll = await _resolve_item_collections(item_id)
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     body = await request.json()
@@ -5839,7 +5869,7 @@ async def update_item_sync_map(
         "duration_ms": duration_ms if duration_ms is not None else existing.get("duration_ms"),
         "updated_at": now,
     }
-    await db.content_items.update_one(
+    await db[item_coll].update_one(
         {"_id": ObjectId(item_id)},
         {"$set": {"audio_sync": new_meta, "updated_at": now}}
     )
@@ -5849,13 +5879,12 @@ async def update_item_sync_map(
 @api_router.get("/content/items/{item_id}/audio")
 async def get_item_audio(item_id: str):
     """Public endpoint — mobile fetches audio_url + sync_map for playback + verse highlighting."""
-    try:
-        item = await db.content_items.find_one({"_id": ObjectId(item_id)}, {"audio_sync": 1, "_id": 0})
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid item_id")
+    item, _coll, _vcoll = await _resolve_item_collections(item_id)
     if not item or not item.get("audio_sync"):
         return {"audio_url": None, "sync_map": [], "duration_ms": None}
-    return item["audio_sync"]
+    audio = item["audio_sync"]
+    audio.pop("_id", None)
+    return audio
 
 
 @api_router.delete("/content/items/{item_id}/audio")
@@ -5863,10 +5892,7 @@ async def delete_item_audio(
     item_id: str,
     admin: dict = Depends(require_role(["super_admin", "content_admin"]))
 ):
-    try:
-        item = await db.content_items.find_one({"_id": ObjectId(item_id)}, {"audio_sync": 1})
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid item_id")
+    item, item_coll, _vcoll = await _resolve_item_collections(item_id)
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     audio_meta = item.get("audio_sync") or {}
@@ -5877,7 +5903,7 @@ async def delete_item_audio(
             target_path.unlink()
         except Exception:
             pass
-    await db.content_items.update_one(
+    await db[item_coll].update_one(
         {"_id": ObjectId(item_id)},
         {"$unset": {"audio_sync": "", "audio_url": ""}}
     )
