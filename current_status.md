@@ -4,6 +4,9 @@ _Last updated: 2026-04-30 (Session: P0 verification)_
 
 ## Active Work
 - **P0 — Stabilize Aarti editor (verify-only, no new features)** → ✅ DONE & VERIFIED (iter22)
+- **Safety additions (Phase: Stabilized Core → Add Safety)** → ✅ DONE & VERIFIED (iter23)
+  - Download Current Sync button — `data-testid=aarti-sync-download-<lang>`
+  - Confirm Overwrite Sync modal — `data-testid=aarti-sync-confirm-modal-<lang>`
 
 ## P0 Verification Results (iteration_22.json)
 | Item | Result |

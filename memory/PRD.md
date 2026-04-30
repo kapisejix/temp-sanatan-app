@@ -275,4 +275,23 @@ Multilingual spiritual platform: React Admin Panel + FastAPI Backend + Expo Mobi
 
 **Side-effect:** the testing agent's Save Sync run overwrote the Hindi sync of the only Aarti (`69f1e1a77488457efddb02b7`) with a 1-verse "Test" fixture. Re-upload before publishing Aarti to mobile.
 
+
+## Session 22 (Feb 30 2026) — Safety additions for Aarti Sync editor
+
+**Phase:** Stabilized Core → Add Safety (per user directive). Strictly isolated, no other modules touched.
+
+- **Download Current Sync** button in `AartiSyncTab` (`/app/frontend/src/pages/BhaktiEditorDrawer.js`):
+  - Pure client-side blob download from in-memory `jsonText`
+  - Filename pattern: `{title}_{lang}_sync.json` (sanitized regex preserves Devanagari + word chars + `-`)
+  - Disabled when editor textarea is empty
+  - `data-testid=aarti-sync-download-<lang>`
+- **Confirm Overwrite Sync** modal:
+  - Save click validates JSON first; then if `existingSync.sync_map.length > 0` opens modal
+  - Cancel button / backdrop click both close without POST
+  - Overwrite button proceeds with original POST `/api/content/items/{id}/lang/{lang}/sync`
+  - `data-testid=aarti-sync-confirm-modal-<lang>` + `-cancel-<lang>` + `-ok-<lang>`
+- New lucide-react import: `Download` icon
+- No backend changes. No other modules touched.
+- Verified by `testing_agent_v3_fork` → `/app/test_reports/iteration_23.json` (8/8 sub-tests pass, Hindi sync NOT mutated).
+
 **Explicitly deferred** (user directive): P1 Cloudflare RUM suppression, P2 per-tab save indicators, Auto-Sync LLM.
