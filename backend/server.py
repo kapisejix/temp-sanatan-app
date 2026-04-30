@@ -727,7 +727,8 @@ async def update_item_status(item_id: str, request: Request, admin: dict = Depen
     item, coll, vcoll = await _resolve_item_collections(item_id)
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
-    # Validate on publish — require title, primary language, and >=1 verse
+    # Validate on publish — require title, primary language. For aarti require
+    # video OR thumbnail per language. For non-aarti require >=1 verse.
     if status == "published":
         missing = []
         if not (item.get("title_hi") or item.get("title_en") or item.get("title_sa")):
@@ -735,9 +736,20 @@ async def update_item_status(item_id: str, request: Request, admin: dict = Depen
         supported = item.get("supported_languages") or []
         if not supported:
             missing.append("supported_languages")
-        verse_count = await db[vcoll].count_documents({"item_id": item_id})
-        if verse_count < 1:
-            missing.append("at least 1 verse")
+        is_aarti = (item.get("category") or "").lower() == "aarti"
+        if is_aarti:
+            languages = item.get("languages") or {}
+            langs_missing_media = []
+            for lang in supported:
+                bucket = languages.get(lang) or {}
+                if not ((bucket.get("video") or {}).get("url") or (bucket.get("thumbnail") or {}).get("url")):
+                    langs_missing_media.append(lang)
+            if langs_missing_media:
+                missing.append(f"video OR thumbnail for [{', '.join(langs_missing_media)}]")
+        else:
+            verse_count = await db[vcoll].count_documents({"item_id": item_id})
+            if verse_count < 1:
+                missing.append("at least 1 verse")
         if missing:
             raise HTTPException(
                 status_code=422,
@@ -760,15 +772,52 @@ async def publish_check(item_id: str, admin: dict = Depends(require_role(["super
          "ok": bool(item.get("title_hi") or item.get("title_en") or item.get("title_sa"))},
         {"key": "primary_language", "label": "At least one supported language",
          "ok": bool(item.get("supported_languages"))},
-        {"key": "verses", "label": "At least 1 verse", "ok": verse_count >= 1,
-         "detail": f"{verse_count} verse(s)"},
-        {"key": "deity", "label": "Deity set (optional)",
-         "ok": bool(item.get("deity") or item.get("deity_hi")), "optional": True},
-        {"key": "audio", "label": "Audio uploaded (optional)",
-         "ok": bool(audio_sync.get("audio_url")), "optional": True},
-        {"key": "sync_map", "label": "Audio-text sync map (optional)",
-         "ok": bool(audio_sync.get("sync_map")), "optional": True},
     ]
+    is_aarti = (item.get("category") or "").lower() == "aarti"
+    if is_aarti:
+        # Aarti has no verse-by-verse requirement; instead require video OR thumbnail
+        # per supported language (spec §1C).
+        languages = item.get("languages") or {}
+        supported = item.get("supported_languages") or []
+        missing_media = []
+        for lang in supported:
+            bucket = languages.get(lang) or {}
+            has_video = bool((bucket.get("video") or {}).get("url"))
+            has_thumb = bool((bucket.get("thumbnail") or {}).get("url"))
+            if not (has_video or has_thumb):
+                missing_media.append(lang)
+        checks.append({
+            "key": "aarti_media",
+            "label": "Each language has a video OR thumbnail",
+            "ok": len(missing_media) == 0,
+            "detail": f"missing: {', '.join(missing_media)}" if missing_media else "all languages covered",
+        })
+        # Audio-without-sync warning (warn, allow publish) — marked optional
+        audio_without_sync = []
+        for lang in supported:
+            bucket = languages.get(lang) or {}
+            has_audio = bool(bucket.get("audio_versions"))
+            has_sync = bool((bucket.get("sync") or {}).get("sync_map"))
+            if has_audio and not has_sync:
+                audio_without_sync.append(lang)
+        checks.append({
+            "key": "aarti_sync",
+            "label": "Audio-text sync per language (optional)",
+            "ok": len(audio_without_sync) == 0,
+            "detail": f"{', '.join(audio_without_sync)} have audio but no sync" if audio_without_sync else "all synced",
+            "optional": True,
+        })
+    else:
+        checks += [
+            {"key": "verses", "label": "At least 1 verse", "ok": verse_count >= 1,
+             "detail": f"{verse_count} verse(s)"},
+            {"key": "deity", "label": "Deity set (optional)",
+             "ok": bool(item.get("deity") or item.get("deity_hi")), "optional": True},
+            {"key": "audio", "label": "Audio uploaded (optional)",
+             "ok": bool(audio_sync.get("audio_url")), "optional": True},
+            {"key": "sync_map", "label": "Audio-text sync map (optional)",
+             "ok": bool(audio_sync.get("sync_map")), "optional": True},
+        ]
     can_publish = all(c["ok"] for c in checks if not c.get("optional"))
     return {
         "can_publish": can_publish,
@@ -5666,8 +5715,28 @@ async def mobile_me(user: dict = Depends(get_current_app_user)):
     return {
         "_id": user["_id"], "email": user["email"], "name": user.get("name"),
         "phone": user.get("phone"), "role": "user",
+        "preferred_language": user.get("preferred_language", "hi"),
         "created_at": user.get("created_at"), "last_login_at": user.get("last_login_at"),
     }
+
+
+@api_router.put("/auth/mobile/settings")
+async def mobile_update_settings(request: Request, user: dict = Depends(get_current_app_user)):
+    """Update user settings like preferred_language (stored on app_users doc)."""
+    body = await request.json()
+    allowed = {}
+    if "preferred_language" in body:
+        lang = str(body["preferred_language"])
+        if lang not in {"hi", "en", "sa", "mr", "gu", "ta", "te", "bn"}:
+            raise HTTPException(status_code=400, detail="Unsupported language")
+        allowed["preferred_language"] = lang
+    if "name" in body and isinstance(body["name"], str):
+        allowed["name"] = body["name"][:120]
+    if not allowed:
+        raise HTTPException(status_code=400, detail="No updatable fields")
+    allowed["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.app_users.update_one({"_id": ObjectId(user["_id"])}, {"$set": allowed})
+    return {"message": "Settings updated", **allowed}
 
 
 @api_router.post("/auth/mobile/logout")
@@ -5925,12 +5994,311 @@ async def delete_item_audio(
 async def root():
     return {"message": "Sanatan Saathi API", "version": "2.0"}
 
-app.include_router(api_router)
+# NOTE: `app.include_router(api_router)` is called at the very bottom of this file
+# so that ALL @api_router.* definitions (including the aarti per-language media
+# block below) are registered. Previously it was called here and new routes
+# defined further down were silently dropped.
 
 # Mount static audio files (uploaded MP3s for content items)
 _AUDIO_DIR = "/app/backend/static/audio"
 os.makedirs(_AUDIO_DIR, exist_ok=True)
 app.mount("/api/audio-static", StaticFiles(directory=_AUDIO_DIR), name="audio-static")
+
+# Mount static aarti per-language media (audio/video/thumbnail buckets)
+_AARTI_DIR = "/app/backend/static/aarti"
+os.makedirs(_AARTI_DIR, exist_ok=True)
+app.mount("/api/aarti-static", StaticFiles(directory=_AARTI_DIR), name="aarti-static")
+
+
+# ===================== AARTI PER-LANGUAGE MEDIA =====================
+#
+# For Aarti items we store media per-language under
+#   /app/backend/static/aarti/{item_id}/{lang}/{audio|video|thumbnail}/{file}
+# and mirror the metadata onto content_items.languages.{lang}:
+#   .audio_versions[] (1..4 MP3s, each {label, url, format})
+#   .video          ({url, format})
+#   .thumbnail      ({url, format})
+#   .sync           (strict nested sync map)
+#
+# All endpoints below validate that the item category == 'aarti' to keep scope tight.
+
+AARTI_STATIC_DIR = _Path(_AARTI_DIR)
+AARTI_VALID_LANGS = {"hi", "en", "sa", "mr", "gu", "ta", "te", "bn"}
+AARTI_AUDIO_EXT = {"mp3", "m4a", "wav", "ogg", "aac"}
+AARTI_VIDEO_EXT = {"mp4", "m4v", "webm", "mov"}
+AARTI_IMAGE_EXT = {"jpg", "jpeg", "png", "webp"}
+AARTI_MAX_AUDIO_BYTES = 25 * 1024 * 1024     # 25 MB
+AARTI_MAX_VIDEO_BYTES = 120 * 1024 * 1024    # 120 MB
+AARTI_MAX_IMAGE_BYTES = 5 * 1024 * 1024      # 5 MB
+
+
+async def _get_aarti_item_or_404(item_id: str):
+    item, coll, _vcoll = await _resolve_item_collections(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    if (item.get("category") or "").lower() != "aarti":
+        raise HTTPException(status_code=400, detail="This endpoint is aarti-only")
+    return item, coll
+
+
+def _validate_lang(lang: str):
+    if lang not in AARTI_VALID_LANGS:
+        raise HTTPException(status_code=400, detail=f"Unsupported language '{lang}'")
+
+
+async def _stream_file_to_disk(upload: UploadFile, target_path: _Path, max_bytes: int):
+    """Save an UploadFile with a cap on total bytes. Removes partial file on overflow."""
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    written = 0
+    with target_path.open("wb") as f:
+        while True:
+            chunk = await upload.read(1024 * 64)
+            if not chunk:
+                break
+            written += len(chunk)
+            if written > max_bytes:
+                f.close()
+                target_path.unlink(missing_ok=True)
+                raise HTTPException(status_code=413, detail=f"File too large (max {max_bytes // (1024*1024)} MB)")
+            f.write(chunk)
+    return written
+
+
+@api_router.post("/content/items/{item_id}/lang/{lang}/audio")
+async def aarti_upload_lang_audio(
+    item_id: str,
+    lang: str,
+    audio: UploadFile = File(...),
+    label: str = Form("Normal"),
+    slot: Optional[int] = Form(None),   # 1..4 — replace existing slot, or append if None
+    admin: dict = Depends(require_role(["super_admin", "content_admin"])),
+):
+    """Upload/replace one of 1..4 audio versions for a specific language of an Aarti."""
+    _validate_lang(lang)
+    item, coll = await _get_aarti_item_or_404(item_id)
+    ext = (audio.filename or "").rsplit(".", 1)[-1].lower()
+    if ext not in AARTI_AUDIO_EXT:
+        raise HTTPException(status_code=400, detail=f"Unsupported audio format: .{ext}")
+
+    languages = dict(item.get("languages") or {})
+    lang_bucket = dict(languages.get(lang) or {})
+    versions = list(lang_bucket.get("audio_versions") or [])
+
+    if slot is None:
+        if len(versions) >= 4:
+            raise HTTPException(status_code=400, detail="Max 4 audio versions per language. Replace an existing slot.")
+        target_slot = len(versions) + 1
+    else:
+        target_slot = int(slot)
+        if target_slot < 1 or target_slot > 4:
+            raise HTTPException(status_code=400, detail="slot must be 1..4")
+
+    target_path = AARTI_STATIC_DIR / item_id / lang / "audio" / f"v{target_slot}.{ext}"
+    await _stream_file_to_disk(audio, target_path, AARTI_MAX_AUDIO_BYTES)
+    url = f"/api/aarti-static/{item_id}/{lang}/audio/v{target_slot}.{ext}"
+
+    new_entry = {"slot": target_slot, "label": label or f"Version {target_slot}", "url": url, "format": ext}
+    versions = [v for v in versions if int(v.get("slot", 0)) != target_slot]
+    versions.append(new_entry)
+    versions.sort(key=lambda v: int(v.get("slot", 0)))
+
+    lang_bucket["audio_versions"] = versions
+    languages[lang] = lang_bucket
+
+    now = datetime.now(timezone.utc).isoformat()
+    await db[coll].update_one(
+        {"_id": ObjectId(item_id)},
+        {"$set": {"languages": languages, "updated_at": now}},
+    )
+    return {"message": "Audio uploaded", "lang": lang, "audio_versions": versions}
+
+
+@api_router.delete("/content/items/{item_id}/lang/{lang}/audio/{slot}")
+async def aarti_delete_lang_audio(
+    item_id: str, lang: str, slot: int,
+    admin: dict = Depends(require_role(["super_admin", "content_admin"])),
+):
+    _validate_lang(lang)
+    item, coll = await _get_aarti_item_or_404(item_id)
+    languages = dict(item.get("languages") or {})
+    lang_bucket = dict(languages.get(lang) or {})
+    versions = list(lang_bucket.get("audio_versions") or [])
+    to_remove = [v for v in versions if int(v.get("slot", 0)) == int(slot)]
+    for v in to_remove:
+        fmt = v.get("format", "mp3")
+        p = AARTI_STATIC_DIR / item_id / lang / "audio" / f"v{slot}.{fmt}"
+        if p.exists():
+            try: p.unlink()
+            except Exception: pass
+    versions = [v for v in versions if int(v.get("slot", 0)) != int(slot)]
+    lang_bucket["audio_versions"] = versions
+    languages[lang] = lang_bucket
+    await db[coll].update_one(
+        {"_id": ObjectId(item_id)},
+        {"$set": {"languages": languages, "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"message": f"Audio slot {slot} removed", "audio_versions": versions}
+
+
+@api_router.post("/content/items/{item_id}/lang/{lang}/video")
+async def aarti_upload_lang_video(
+    item_id: str, lang: str,
+    video: UploadFile = File(...),
+    admin: dict = Depends(require_role(["super_admin", "content_admin"])),
+):
+    _validate_lang(lang)
+    item, coll = await _get_aarti_item_or_404(item_id)
+    ext = (video.filename or "").rsplit(".", 1)[-1].lower()
+    if ext not in AARTI_VIDEO_EXT:
+        raise HTTPException(status_code=400, detail=f"Unsupported video format: .{ext}")
+
+    # Remove old video files with different extensions
+    base_dir = AARTI_STATIC_DIR / item_id / lang / "video"
+    if base_dir.exists():
+        for old in base_dir.glob("main.*"):
+            try: old.unlink()
+            except Exception: pass
+
+    target_path = base_dir / f"main.{ext}"
+    await _stream_file_to_disk(video, target_path, AARTI_MAX_VIDEO_BYTES)
+    url = f"/api/aarti-static/{item_id}/{lang}/video/main.{ext}"
+
+    languages = dict(item.get("languages") or {})
+    lang_bucket = dict(languages.get(lang) or {})
+    lang_bucket["video"] = {"url": url, "format": ext}
+    languages[lang] = lang_bucket
+    await db[coll].update_one(
+        {"_id": ObjectId(item_id)},
+        {"$set": {"languages": languages, "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"message": "Video uploaded", "lang": lang, "video": lang_bucket["video"]}
+
+
+@api_router.delete("/content/items/{item_id}/lang/{lang}/video")
+async def aarti_delete_lang_video(
+    item_id: str, lang: str,
+    admin: dict = Depends(require_role(["super_admin", "content_admin"])),
+):
+    _validate_lang(lang)
+    item, coll = await _get_aarti_item_or_404(item_id)
+    base_dir = AARTI_STATIC_DIR / item_id / lang / "video"
+    if base_dir.exists():
+        for old in base_dir.glob("main.*"):
+            try: old.unlink()
+            except Exception: pass
+    languages = dict(item.get("languages") or {})
+    if lang in languages and isinstance(languages[lang], dict):
+        languages[lang] = {k: v for k, v in languages[lang].items() if k != "video"}
+    await db[coll].update_one(
+        {"_id": ObjectId(item_id)},
+        {"$set": {"languages": languages, "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"message": "Video removed"}
+
+
+@api_router.post("/content/items/{item_id}/lang/{lang}/thumbnail")
+async def aarti_upload_lang_thumbnail(
+    item_id: str, lang: str,
+    thumbnail: UploadFile = File(...),
+    admin: dict = Depends(require_role(["super_admin", "content_admin"])),
+):
+    """Upload a per-language thumbnail image. File upload only (no external URLs)."""
+    _validate_lang(lang)
+    item, coll = await _get_aarti_item_or_404(item_id)
+    ext = (thumbnail.filename or "").rsplit(".", 1)[-1].lower()
+    if ext not in AARTI_IMAGE_EXT:
+        raise HTTPException(status_code=400, detail=f"Unsupported image format: .{ext}")
+
+    base_dir = AARTI_STATIC_DIR / item_id / lang / "thumbnail"
+    if base_dir.exists():
+        for old in base_dir.glob("main.*"):
+            try: old.unlink()
+            except Exception: pass
+    target_path = base_dir / f"main.{ext}"
+    await _stream_file_to_disk(thumbnail, target_path, AARTI_MAX_IMAGE_BYTES)
+    url = f"/api/aarti-static/{item_id}/{lang}/thumbnail/main.{ext}"
+
+    languages = dict(item.get("languages") or {})
+    lang_bucket = dict(languages.get(lang) or {})
+    lang_bucket["thumbnail"] = {"url": url, "format": ext}
+    languages[lang] = lang_bucket
+    await db[coll].update_one(
+        {"_id": ObjectId(item_id)},
+        {"$set": {"languages": languages, "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"message": "Thumbnail uploaded", "lang": lang, "thumbnail": lang_bucket["thumbnail"]}
+
+
+@api_router.post("/content/items/{item_id}/lang/{lang}/sync")
+async def aarti_upload_lang_sync(
+    item_id: str, lang: str, request: Request,
+    admin: dict = Depends(require_role(["super_admin", "content_admin"])),
+):
+    """Upload sync JSON for a specific language of an Aarti. Accepts the strict nested
+    {verses:[{verse_id,start_ms,end_ms,lines:[...]}]} format or a legacy flat list."""
+    _validate_lang(lang)
+    item, coll = await _get_aarti_item_or_404(item_id)
+    body = await request.json()
+    try:
+        if isinstance(body, dict) and isinstance(body.get("verses"), list) \
+                and body["verses"] and isinstance(body["verses"][0], dict) \
+                and "lines" in body["verses"][0]:
+            from audio_sync_service import parse_nested_json_sync
+            sync_map = parse_nested_json_sync(body)
+            duration_ms = body.get("duration_ms")
+        else:
+            from audio_sync_service import parse_json_sync
+            sync_map = parse_json_sync(body)
+            duration_ms = None
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Sync parse error: {e}")
+
+    # Overlap check (spec §1 validation)
+    for i in range(1, len(sync_map)):
+        prev = sync_map[i - 1]
+        cur = sync_map[i]
+        if prev.get("end_ms") and cur.get("start_ms") < prev["end_ms"]:
+            raise HTTPException(status_code=400, detail=f"Timestamp overlap at verse {cur.get('verse_num')} (starts before verse {prev.get('verse_num')} ends)")
+
+    languages = dict(item.get("languages") or {})
+    lang_bucket = dict(languages.get(lang) or {})
+    lang_bucket["sync"] = {
+        "sync_map": sync_map,
+        "duration_ms": duration_ms,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    languages[lang] = lang_bucket
+    await db[coll].update_one(
+        {"_id": ObjectId(item_id)},
+        {"$set": {"languages": languages, "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"message": "Sync map saved", "lang": lang, "sync_verses": len(sync_map)}
+
+
+@api_router.get("/content/items/{item_id}/lang/{lang}/media")
+async def aarti_get_lang_media(item_id: str, lang: str):
+    """Public — mobile fetches the resolved language's media bundle."""
+    _validate_lang(lang)
+    item, _coll, _vcoll = await _resolve_item_collections(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    languages = item.get("languages") or {}
+    bucket = languages.get(lang) or {}
+    return {
+        "lang": lang,
+        "audio_versions": bucket.get("audio_versions") or [],
+        "video": bucket.get("video"),
+        "thumbnail": bucket.get("thumbnail"),
+        "sync": bucket.get("sync"),
+        "full_text": bucket.get("full_text") or "",
+    }
+
+
+# ------------------------------------------------------------------
+# Finally register ALL api_router routes (must come AFTER every @api_router
+# decorator in this file — see note above).
+app.include_router(api_router)
+
 
 
 @app.on_event("startup")

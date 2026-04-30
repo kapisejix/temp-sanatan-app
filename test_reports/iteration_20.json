@@ -1,0 +1,40 @@
+{
+  "summary": "Iter20 — Aarti per-language media (audio/video/thumbnail/sync) + mobile preferred_language. ALL GREEN. Backend: 27/27 new pytest cases pass in test_iter20_aarti_per_lang_media.py (3.94s). Regression: 51/51 across iter16+iter18+iter19+iter20 pass (9.98s) — fixed 1 test_iter18 hardcoded len(checks)==6 to ==4 to match new aarti publish-check rows (title, primary_language, aarti_media, aarti_sync). Validated: 1..4 audio slot enforcement (5th rejected 400 with 'Max 4'), slot replace via slot=N, DELETE keeps siblings, mp4/webm video accepted + ext-replacement (old extension files cleaned), .txt video rejected 400, png thumbnail accepted + .gif rejected, nested sync persisted with sync_verses>=2, OVERLAP REJECTION working at verse 2 starts<verse 1 ends → 400 'Timestamp overlap at verse 2 (starts before verse 1 ends)', public GET /lang/{lang}/media returns full bundle (lang/audio_versions/video/thumbnail/sync/full_text), chalisa rejected 400 'aarti-only' on POST /audio, lang='xx' returns 400 'Unsupported language' on all 4 POSTs, aarti publish-check has aarti_media+aarti_sync (no verses/deity/audio rows), chalisa publish-check still has all 6 original rows (no aarti rows leaked), publish blocked 422 when supported lang missing video AND thumbnail, mobile signup→PUT /auth/mobile/settings preferred_language='hi'→GET /auth/mobile/me returns it, 'xx' rejected. Frontend (Aarti drawer /admin/arti-manager?edit=69f1e1a77488457efddb02b7): all 6 tabs present incl drawer-tab-video, verses tab hidden, aarti-lang-bar correctly toggled (hidden on content+publish, visible on fulltext+audio+video+sync), lang chips hi+mr present (en absent — matches supported_languages), audio tab body switches between aarti-audio-tab-hi ↔ aarti-audio-tab-mr on chip click, all aarti-audio-{file,label,slot,upload}-{lang} testids present, video tab shows aarti-video-file-mr + aarti-thumb-file-mr (file-only, no URL field), sync editor + save button present, OVERLAP rejection surfaces in drawer-error: 'Timestamp overlap at verse 2 (starts before verse 1 ends)'. Chalisa regression (/admin/chalisa-manager?edit=69f053c8053b601fc045a5ca): tabs content/fulltext/verses/audio/sync/publish all present, drawer-tab-video hidden, aarti-lang-bar hidden — no regression.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "BhaktiEditorDrawer (Aarti)", "issues": ["React hydration warning: <span> cannot be a child of <option> — caused by Emergent dev-tool x-source injection in <select><option>{label}</option></select>; harmless in dev, but to silence the warning consider rendering option text via a wrapper-free template (e.g. {`${slot} ${label}`}). Not a functional bug."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter20_aarti_per_lang_media.py",
+    "/app/test_reports/pytest/iter20.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py:6035-6041 — _get_aarti_item_or_404 reuses _resolve_item_collections so endpoints work transparently for items in either bhakti_items or content_items. Clean.",
+    "server.py:6049-6064 — _stream_file_to_disk caps bytes per-file (25MB audio, 120MB video, 5MB image) and removes partial file on overflow with proper 413. Defensive.",
+    "server.py:6155-6160 — video upload pre-deletes old main.* extensions before writing new one — prevents stale .mp4 lingering after a .webm replace. Confirmed by test_upload_video_webm_replaces_extension.",
+    "server.py:6256-6261 — overlap check uses cur.start_ms < prev.end_ms after parse, returning a precise 400 with verse number. Spec §1 satisfied. Both API + UI paths surface the message.",
+    "server.py:6278-6294 — public GET /lang/{lang}/media has no auth dependency — correct for mobile consumption. Returns empty arrays/null gracefully when bucket is missing.",
+    "server.py:5723-5739 — PUT /auth/mobile/settings whitelists fields (preferred_language, name) and validates language against AARTI_VALID_LANGS subset. Good.",
+    "BhaktiEditorDrawer.js:230 — aarti-lang-bar conditionally rendered based on activeTab in {fulltext,audio,video,sync} AND mode==aarti — matches spec. Verified end-to-end.",
+    "Minor: option labels inside <select> are rendered as JSX expressions which Emergent's dev tooling wraps in <span style=display:contents> — generates a hydration warning but is purely a dev-overlay artifact and does not appear in production builds."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter20_aarti_per_lang_media.py (new — 27 cases)",
+    "/app/backend/tests/test_iter18_bhakti_collection_resolver.py (1-line fix: aarti publish-check len changed 6→4 to reflect new spec; added key assertions for aarti_media/aarti_sync)"
+  ],
+  "success_rate": {
+    "backend": "100% (27/27 iter20 + 51/51 cumulative iter16+18+19+20 in 9.98s)",
+    "frontend": "100% (Aarti 6-tab layout + lang bar conditional visibility + lang chips + per-lang body switching + overlap UI error + Chalisa no-regression all verified)"
+  },
+  "test_credentials": "admin@sanatansaathi.com / SanatanAdmin@2026 (super_admin); mobile signup creates fresh TEST_iter20_<ts>@example.com per run",
+  "seed_data_creation": "iter20 backend uploads (then cleans up) 4 audio slots + 1 video on AARTI_ID/hi; thumbnail upload at AARTI_ID/hi/thumbnail is left in place (no delete endpoint per spec). One sync map persists at AARTI_ID/languages.hi.sync.sync_map (2 verses, 0–10s). One TEST_iter20 mobile user is created in app_users — non-destructive, can be left.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "iter20 = 27 new pytest cases covering all 7 aarti per-lang media endpoints + publish-check delta + mobile preferred_language. Regression suites iter16/iter18/iter19/iter20 = 51 cases pass cumulatively. NOTE for iter18 maintainers: aarti publish-check now has 4 rows (not 6) — fixed in test_iter18_bhakti_collection_resolver.py. Mobile content-detail screen NOT tested (out of scope per request). Aarti AARTI_ID=69f1e1a77488457efddb02b7 supports only hi+mr (not en) — be aware when adding chip-related tests. The hydration warning around <select><option> is dev-tool artifact only.",
+  "rca of the issue": "N/A — clean implementation, no bugs found."
+}

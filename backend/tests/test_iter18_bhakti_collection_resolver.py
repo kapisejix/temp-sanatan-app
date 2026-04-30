@@ -84,10 +84,12 @@ def test_publish_check_aarti(session):
     assert r.status_code == 200, f"{r.status_code} {r.text}"
     data = r.json()
     assert "can_publish" in data
-    assert "checks" in data and len(data["checks"]) == 6
+    # iter20 spec: aarti publish-check now has 4 rows (title, primary_language,
+    # aarti_media, aarti_sync) — verse-based rows moved out of aarti branch.
+    assert "checks" in data and len(data["checks"]) == 4
+    keys = {c["key"] for c in data["checks"]}
+    assert "aarti_media" in keys and "aarti_sync" in keys
     assert data["verse_count"] == initial_count
-    if initial_count == 0:
-        assert data["can_publish"] is False
 
 
 # ------------------------------------------------------------------

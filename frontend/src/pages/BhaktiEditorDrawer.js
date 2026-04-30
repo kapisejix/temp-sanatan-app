@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   FileText, BookOpen, Music, Clock3, CheckCircle2, AlertCircle,
   Save, Loader2, X, Plus, Trash2, Edit3, Upload, Layers, GraduationCap,
-  ScrollText,
+  ScrollText, Video as VideoIcon, Image as ImageIcon,
 } from 'lucide-react';
 
 /**
@@ -46,6 +46,18 @@ export default function BhaktiEditorDrawer({ api, itemId, category, open, onClos
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
   const [publishCheck, setPublishCheck] = useState(null);
+  // Shared language selection — drives Full Text + (for Aarti) Audio/Video/Sync tabs
+  const [selectedLang, setSelectedLang] = useState('hi');
+
+  // When item loads, default the shared selectedLang to the item's first supported language
+  useEffect(() => {
+    if (item && Array.isArray(item.supported_languages) && item.supported_languages.length) {
+      if (!item.supported_languages.includes(selectedLang)) {
+        setSelectedLang(item.supported_languages[0]);
+      }
+    }
+    // eslint-disable-next-line
+  }, [item?._id]);
 
   const TABS = useMemo(() => {
     const base = [
@@ -57,6 +69,9 @@ export default function BhaktiEditorDrawer({ api, itemId, category, open, onClos
       base.push({ id: 'verses', label: 'Verses', icon: BookOpen });
     }
     base.push({ id: 'audio', label: 'Audio', icon: Music });
+    if (isAarti) {
+      base.push({ id: 'video', label: 'Video', icon: VideoIcon });
+    }
     if (mode === 'expert' || isAarti) {
       base.push({ id: 'sync', label: 'Audio Sync', icon: Clock3 });
     } else {
@@ -208,6 +223,32 @@ export default function BhaktiEditorDrawer({ api, itemId, category, open, onClos
           </div>
         )}
 
+        {/* Aarti-only: shared language switcher bar — drives Full Text + Audio + Video + Sync tabs */}
+        {item && isAarti && (item.supported_languages || []).length > 0 &&
+         ['fulltext', 'audio', 'video', 'sync'].includes(activeTab) && (
+          <div className="flex-shrink-0 bg-[#FEF0EC] border-b border-[#FDDDD4] px-6 py-2 flex items-center gap-2 flex-wrap"
+               data-testid="aarti-lang-bar">
+            <span className="text-[11px] font-bold text-[#B84325] uppercase tracking-wider mr-2">Language</span>
+            {(item.supported_languages || []).map((code) => {
+              const l = LANGUAGES.find((x) => x.code === code) || { code, label_en: code };
+              return (
+                <button
+                  key={code}
+                  onClick={() => setSelectedLang(code)}
+                  data-testid={`aarti-lang-${code}`}
+                  className={`px-3 py-1 rounded-full text-xs font-semibold transition-colors ${
+                    selectedLang === code
+                      ? 'bg-[#E95A34] text-white shadow-sm'
+                      : 'bg-white text-[#7A8690] border border-[#FDDDD4] hover:border-[#E95A34]'
+                  }`}
+                >
+                  {l.label_en} <span className="opacity-70 ml-1">{l.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
         {/* Status / error bar */}
         {(error || status) && (
           <div className="flex-shrink-0 px-6 py-2 space-y-2">
@@ -243,16 +284,24 @@ export default function BhaktiEditorDrawer({ api, itemId, category, open, onClos
                 <ContentTab item={item} api={api} onSaved={(d) => { setItem(d); setStatus('Content saved'); onChange && onChange(); }} setError={setError} />
               )}
               {activeTab === 'fulltext' && (
-                <FullTextTab item={item} api={api} onSaved={(d) => { setItem(d); setStatus('Full text saved'); onChange && onChange(); }} setError={setError} />
+                <FullTextTab item={item} api={api} selectedLang={selectedLang} setSelectedLang={setSelectedLang}
+                             onSaved={(d) => { setItem(d); setStatus('Full text saved'); onChange && onChange(); }} setError={setError} />
               )}
               {activeTab === 'verses' && (
                 <VersesTab item={item} api={api} onChanged={refreshItem} setError={setError} setStatus={setStatus} supported={item.supported_languages || ['hi']} />
               )}
               {activeTab === 'audio' && (
-                <AudioTab item={item} api={api} onChanged={refreshItem} setError={setError} setStatus={setStatus} mode={mode} />
+                isAarti
+                  ? <AartiAudioTab item={item} api={api} lang={selectedLang} onChanged={refreshItem} setError={setError} setStatus={setStatus} />
+                  : <AudioTab item={item} api={api} onChanged={refreshItem} setError={setError} setStatus={setStatus} mode={mode} />
+              )}
+              {activeTab === 'video' && isAarti && (
+                <AartiVideoTab item={item} api={api} lang={selectedLang} onChanged={refreshItem} setError={setError} setStatus={setStatus} />
               )}
               {activeTab === 'sync' && (
-                <SyncTab item={item} api={api} onChanged={refreshItem} setError={setError} setStatus={setStatus} />
+                isAarti
+                  ? <AartiSyncTab item={item} api={api} lang={selectedLang} onChanged={refreshItem} setError={setError} setStatus={setStatus} />
+                  : <SyncTab item={item} api={api} onChanged={refreshItem} setError={setError} setStatus={setStatus} />
               )}
               {activeTab === 'learner' && (
                 <LearnerTab item={item} api={api} />
@@ -274,10 +323,13 @@ export default function BhaktiEditorDrawer({ api, itemId, category, open, onClos
 }
 
 /* ---------------- Full Text Tab (multilingual single-textarea authoring) ---------------- */
-function FullTextTab({ item, api, onSaved, setError }) {
+function FullTextTab({ item, api, selectedLang, setSelectedLang, onSaved, setError }) {
   const supported = item.supported_languages && item.supported_languages.length
     ? item.supported_languages : ['hi', 'en'];
-  const [activeLang, setActiveLang] = useState(supported[0]);
+  // If no shared state provided (non-aarti), fall back to local state
+  const [localLang, setLocalLang] = useState(supported[0]);
+  const activeLang = selectedLang || localLang;
+  const setActiveLang = setSelectedLang || setLocalLang;
   const [saving, setSaving] = useState(false);
 
   // Build initial state from item.languages.{lang}.full_text + legacy `full_text`
@@ -340,7 +392,8 @@ function FullTextTab({ item, api, onSaved, setError }) {
         </span>
       </div>
 
-      {/* Language sub-tabs */}
+      {/* Language sub-tabs — hidden when the Aarti drawer's shared lang bar is active */}
+      {!setSelectedLang && (
       <div className="flex border-b border-[#E8E4E1] bg-[#F8F3F1] overflow-x-auto">
         {supported.map((code) => {
           const l = LANGUAGES.find((x) => x.code === code) || { code, label_en: code };
@@ -358,6 +411,7 @@ function FullTextTab({ item, api, onSaved, setError }) {
           );
         })}
       </div>
+      )}
 
       <div className="p-5 space-y-3">
         <textarea
@@ -1217,6 +1271,353 @@ function PublishTab({ item, api, check, reload, onStatusChanged, setError, setSt
             {check.can_publish ? 'Publish Item' : 'Fix required fields above'}
           </button>
         )}
+      </div>
+    </div>
+  );
+}
+
+
+/* ============================================================
+ * AARTI-ONLY TABS (per-language audio versions, video, sync)
+ * ============================================================
+ * All three read/write the shared `selectedLang` state chosen in the
+ * top-of-drawer language switcher. They reuse the same DB shape as the rest
+ * of the app and talk to the new /api/content/items/:id/lang/:lang/* endpoints.
+ */
+
+function langLabel(code) {
+  return (LANGUAGES.find((x) => x.code === code) || { label_en: code }).label_en;
+}
+
+/* ---- Aarti Audio Tab: 1..4 MP3 versions per language with labels ---- */
+function AartiAudioTab({ item, api, lang, onChanged, setError, setStatus }) {
+  const bucket = (item.languages && item.languages[lang]) || {};
+  const versions = bucket.audio_versions || [];
+  const [file, setFile] = useState(null);
+  const [label, setLabel] = useState('Normal');
+  const [slot, setSlot] = useState('');  // blank = append
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef(null);
+
+  const upload = async () => {
+    if (!file) return setError('Select an MP3 file');
+    setUploading(true); setError('');
+    try {
+      const fd = new FormData();
+      fd.append('audio', file);
+      fd.append('label', label || 'Normal');
+      if (slot) fd.append('slot', String(slot));
+      await api.post(`/content/items/${item._id}/lang/${lang}/audio`, fd,
+        { headers: { 'Content-Type': 'multipart/form-data' } });
+      setStatus(`✓ Audio uploaded for ${langLabel(lang)}`);
+      setFile(null); setLabel('Normal'); setSlot('');
+      if (fileRef.current) fileRef.current.value = '';
+      onChanged();
+    } catch (e) {
+      setError(e?.response?.data?.detail || 'Upload failed');
+    } finally { setUploading(false); }
+  };
+
+  const remove = async (slotNum) => {
+    if (!window.confirm(`Delete audio slot ${slotNum} for ${langLabel(lang)}?`)) return;
+    try {
+      await api.delete(`/content/items/${item._id}/lang/${lang}/audio/${slotNum}`);
+      setStatus(`Audio slot ${slotNum} removed`);
+      onChanged();
+    } catch { setError('Delete failed'); }
+  };
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4" data-testid={`aarti-audio-tab-${lang}`}>
+      <div className="bg-white rounded-xl border border-[#E8E4E1] p-5 space-y-3">
+        <h3 className="text-sm font-semibold flex items-center gap-2">
+          <Music size={16} /> Audio Versions · {langLabel(lang)}
+          <span className="text-[10px] font-normal text-[#7A8690]">(up to 4)</span>
+        </h3>
+        {versions.length === 0 ? (
+          <p className="text-xs text-[#989EA4] italic">No audio yet for this language.</p>
+        ) : (
+          <div className="space-y-2">
+            {versions.map((v) => (
+              <div key={v.slot} className="flex items-center gap-2 bg-[#F8F3F1] p-2 rounded-lg border border-[#E8E4E1]"
+                   data-testid={`aarti-audio-row-${lang}-${v.slot}`}>
+                <span className="text-xs font-bold text-[#E95A34] bg-white px-1.5 py-0.5 rounded">V{v.slot}</span>
+                <span className="text-xs font-medium text-[#374652] flex-1">{v.label}</span>
+                <audio controls src={v.url} className="h-7" style={{ maxWidth: 180 }} />
+                <button onClick={() => remove(v.slot)} className="p-1 hover:bg-red-50 rounded text-red-500"
+                        data-testid={`aarti-audio-delete-${lang}-${v.slot}`}>
+                  <Trash2 size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white rounded-xl border border-[#E8E4E1] p-5 space-y-3">
+        <h3 className="text-sm font-semibold flex items-center gap-2">
+          <Upload size={16} /> Upload Audio
+        </h3>
+        <div>
+          <label className="block text-xs font-semibold mb-1">Audio file (.mp3/.m4a/.wav)</label>
+          <input ref={fileRef} type="file" accept="audio/*,.mp3,.m4a,.wav,.ogg,.aac"
+                 onChange={(e) => setFile(e.target.files?.[0] || null)}
+                 data-testid={`aarti-audio-file-${lang}`}
+                 className="block w-full text-sm file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:bg-[#E95A34] file:text-white" />
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="block text-xs font-semibold mb-1">Label</label>
+            <select value={label} onChange={(e) => setLabel(e.target.value)}
+                    data-testid={`aarti-audio-label-${lang}`}
+                    className="w-full px-2 py-1.5 border border-[#E8E4E1] rounded text-sm">
+              {['Slow', 'Normal', 'Music', 'Custom'].map((x) => <option key={x} value={x}>{x}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold mb-1">Slot (blank = next)</label>
+            <select value={slot} onChange={(e) => setSlot(e.target.value)}
+                    data-testid={`aarti-audio-slot-${lang}`}
+                    className="w-full px-2 py-1.5 border border-[#E8E4E1] rounded text-sm">
+              <option value="">Append</option>
+              {[1, 2, 3, 4].map((s) => <option key={s} value={s}>Slot {s}</option>)}
+            </select>
+          </div>
+        </div>
+        <button onClick={upload} disabled={uploading || !file}
+                data-testid={`aarti-audio-upload-${lang}`}
+                className="w-full bg-[#E95A34] text-white py-2 rounded-lg text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2">
+          {uploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+          {uploading ? 'Uploading…' : `Upload ${label}`}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ---- Aarti Video Tab: MP4 + Thumbnail per language (file-only, no URL) ---- */
+function AartiVideoTab({ item, api, lang, onChanged, setError, setStatus }) {
+  const bucket = (item.languages && item.languages[lang]) || {};
+  const video = bucket.video;
+  const thumbnail = bucket.thumbnail;
+  const [vFile, setVFile] = useState(null);
+  const [tFile, setTFile] = useState(null);
+  const [busy, setBusy] = useState('');
+  const vRef = useRef(null);
+  const tRef = useRef(null);
+
+  const uploadVideo = async () => {
+    if (!vFile) return setError('Select a video file');
+    setBusy('video'); setError('');
+    try {
+      const fd = new FormData();
+      fd.append('video', vFile);
+      await api.post(`/content/items/${item._id}/lang/${lang}/video`, fd,
+        { headers: { 'Content-Type': 'multipart/form-data' } });
+      setStatus(`✓ Video uploaded for ${langLabel(lang)}`);
+      setVFile(null);
+      if (vRef.current) vRef.current.value = '';
+      onChanged();
+    } catch (e) { setError(e?.response?.data?.detail || 'Video upload failed'); }
+    finally { setBusy(''); }
+  };
+
+  const uploadThumb = async () => {
+    if (!tFile) return setError('Select an image file');
+    setBusy('thumb'); setError('');
+    try {
+      const fd = new FormData();
+      fd.append('thumbnail', tFile);
+      await api.post(`/content/items/${item._id}/lang/${lang}/thumbnail`, fd,
+        { headers: { 'Content-Type': 'multipart/form-data' } });
+      setStatus(`✓ Thumbnail uploaded for ${langLabel(lang)}`);
+      setTFile(null);
+      if (tRef.current) tRef.current.value = '';
+      onChanged();
+    } catch (e) { setError(e?.response?.data?.detail || 'Thumbnail upload failed'); }
+    finally { setBusy(''); }
+  };
+
+  const deleteVideo = async () => {
+    if (!window.confirm(`Remove video for ${langLabel(lang)}?`)) return;
+    try {
+      await api.delete(`/content/items/${item._id}/lang/${lang}/video`);
+      setStatus('Video removed'); onChanged();
+    } catch { setError('Delete failed'); }
+  };
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4" data-testid={`aarti-video-tab-${lang}`}>
+      {/* Video */}
+      <div className="bg-white rounded-xl border border-[#E8E4E1] p-5 space-y-3">
+        <h3 className="text-sm font-semibold flex items-center gap-2">
+          <VideoIcon size={16} /> Video · {langLabel(lang)}
+        </h3>
+        {video?.url ? (
+          <>
+            <video controls src={video.url} className="w-full rounded-lg bg-black"
+                   style={{ maxHeight: 260 }} data-testid={`aarti-video-player-${lang}`} />
+            <button onClick={deleteVideo} data-testid={`aarti-video-delete-${lang}`}
+                    className="w-full border border-red-300 text-red-600 px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-red-50 flex items-center justify-center gap-1">
+              <Trash2 size={12} /> Remove Video
+            </button>
+          </>
+        ) : (
+          <p className="text-xs text-[#989EA4] italic">No video uploaded for this language.</p>
+        )}
+        <div className="border-t border-[#E8E4E1] pt-3 space-y-2">
+          <label className="block text-xs font-semibold mb-1">Upload / Replace Video (.mp4 / .webm)</label>
+          <input ref={vRef} type="file" accept="video/mp4,video/webm,.mp4,.webm,.mov,.m4v"
+                 onChange={(e) => setVFile(e.target.files?.[0] || null)}
+                 data-testid={`aarti-video-file-${lang}`}
+                 className="block w-full text-sm file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:bg-[#E95A34] file:text-white" />
+          <button onClick={uploadVideo} disabled={!vFile || busy === 'video'}
+                  data-testid={`aarti-video-upload-${lang}`}
+                  className="w-full bg-[#E95A34] text-white py-2 rounded-lg text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2">
+            {busy === 'video' ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+            {busy === 'video' ? 'Uploading…' : 'Upload Video'}
+          </button>
+        </div>
+      </div>
+
+      {/* Thumbnail */}
+      <div className="bg-white rounded-xl border border-[#E8E4E1] p-5 space-y-3">
+        <h3 className="text-sm font-semibold flex items-center gap-2">
+          <ImageIcon size={16} /> Thumbnail · {langLabel(lang)}
+          <span className="text-[10px] font-normal text-[#7A8690]">(file upload — external URLs not allowed)</span>
+        </h3>
+        {thumbnail?.url ? (
+          <img src={thumbnail.url} alt="" className="w-full rounded-lg bg-[#F3EDEA] object-cover"
+               style={{ maxHeight: 260 }} data-testid={`aarti-thumb-img-${lang}`} />
+        ) : (
+          <div className="w-full rounded-lg bg-[#F8F3F1] border-2 border-dashed border-[#E8E4E1] text-center py-14 text-xs text-[#989EA4] italic">
+            Required when no video is uploaded
+          </div>
+        )}
+        <div className="border-t border-[#E8E4E1] pt-3 space-y-2">
+          <label className="block text-xs font-semibold mb-1">Upload / Replace Thumbnail (.jpg / .png / .webp)</label>
+          <input ref={tRef} type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+                 onChange={(e) => setTFile(e.target.files?.[0] || null)}
+                 data-testid={`aarti-thumb-file-${lang}`}
+                 className="block w-full text-sm file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:bg-[#E95A34] file:text-white" />
+          <button onClick={uploadThumb} disabled={!tFile || busy === 'thumb'}
+                  data-testid={`aarti-thumb-upload-${lang}`}
+                  className="w-full bg-[#E95A34] text-white py-2 rounded-lg text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2">
+            {busy === 'thumb' ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+            {busy === 'thumb' ? 'Uploading…' : 'Upload Thumbnail'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---- Aarti Sync Tab: strict nested JSON per language ---- */
+function AartiSyncTab({ item, api, lang, onChanged, setError, setStatus }) {
+  const bucket = (item.languages && item.languages[lang]) || {};
+  const existingSync = bucket.sync || {};
+  const [jsonText, setJsonText] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [parseErr, setParseErr] = useState('');
+
+  useEffect(() => {
+    // Reset editor whenever the selected language changes
+    if (Array.isArray(existingSync.sync_map) && existingSync.sync_map.length) {
+      const verses = existingSync.sync_map.map((v) => ({
+        verse_id: v.verse_num,
+        start_ms: v.start_ms,
+        end_ms: v.end_ms,
+        lines: v.lines && v.lines.length ? v.lines
+          : (v.text ? [{ text: v.text, start_ms: v.start_ms, end_ms: v.end_ms }] : []),
+      }));
+      setJsonText(JSON.stringify({
+        audio_file: (bucket.audio_versions && bucket.audio_versions[0] && bucket.audio_versions[0].url) || '',
+        duration_ms: existingSync.duration_ms || 0,
+        verses,
+      }, null, 2));
+    } else {
+      setJsonText(JSON.stringify({
+        audio_file: (bucket.audio_versions && bucket.audio_versions[0] && bucket.audio_versions[0].url) || '',
+        duration_ms: 0,
+        verses: [
+          { verse_id: 1, start_ms: 0, end_ms: 5000,
+            lines: [{ text: 'Line 1', start_ms: 0, end_ms: 2500 },
+                    { text: 'Line 2', start_ms: 2500, end_ms: 5000 }] },
+        ],
+      }, null, 2));
+    }
+    setParseErr('');
+    // eslint-disable-next-line
+  }, [lang, item._id]);
+
+  const save = async () => {
+    setSaving(true); setParseErr('');
+    let body;
+    try { body = JSON.parse(jsonText); }
+    catch (e) { setParseErr('Invalid JSON: ' + e.message); setSaving(false); return; }
+    try {
+      await api.post(`/content/items/${item._id}/lang/${lang}/sync`, body);
+      setStatus(`✓ Sync saved for ${langLabel(lang)}`);
+      onChanged();
+    } catch (e) {
+      setError(e?.response?.data?.detail || 'Save failed');
+    } finally { setSaving(false); }
+  };
+
+  const firstAudio = (bucket.audio_versions || [])[0];
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4" data-testid={`aarti-sync-tab-${lang}`}>
+      <div className="bg-white rounded-xl border border-[#E8E4E1] p-5 space-y-3">
+        <h3 className="text-sm font-semibold flex items-center gap-2">
+          <Clock3 size={16} /> Sync JSON · {langLabel(lang)}
+        </h3>
+        <p className="text-xs text-[#7A8690]">
+          Strict nested format: <code className="bg-[#F3EDEA] px-1 rounded">verses[]</code> each with
+          <code className="bg-[#F3EDEA] px-1 rounded ml-1">start_ms</code>,
+          <code className="bg-[#F3EDEA] px-1 rounded ml-1">end_ms</code> and nested
+          <code className="bg-[#F3EDEA] px-1 rounded ml-1">lines[]</code>. Overlaps are rejected.
+        </p>
+        <textarea value={jsonText} onChange={(e) => setJsonText(e.target.value)} rows={20}
+                  data-testid={`aarti-sync-editor-${lang}`} spellCheck={false}
+                  className="w-full px-3 py-2 bg-[#0F172A] text-[#E2E8F0] font-mono text-xs rounded-lg border border-[#1E293B]" />
+        {parseErr && <p className="text-xs text-red-600">{parseErr}</p>}
+        <button onClick={save} disabled={saving} data-testid={`aarti-sync-save-${lang}`}
+                className="w-full bg-[#E95A34] text-white py-2 rounded-lg text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2">
+          {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save Sync
+        </button>
+      </div>
+      <div className="bg-white rounded-xl border border-[#E8E4E1] p-5 space-y-3">
+        <h3 className="text-sm font-semibold">Live Preview</h3>
+        {firstAudio?.url ? (
+          <audio controls src={firstAudio.url} className="w-full" data-testid={`aarti-sync-preview-${lang}`} />
+        ) : (
+          <p className="text-xs text-[#989EA4] italic">Upload audio for {langLabel(lang)} first (Audio tab)</p>
+        )}
+        <div className="max-h-[380px] overflow-y-auto border border-[#E8E4E1] rounded-lg">
+          <table className="w-full text-xs">
+            <thead className="bg-[#F8F3F1] sticky top-0">
+              <tr><th className="text-left px-2 py-1">#</th>
+                  <th className="text-left px-2 py-1">Start</th>
+                  <th className="text-left px-2 py-1">Lines</th></tr>
+            </thead>
+            <tbody>
+              {(existingSync.sync_map || []).map((v) => (
+                <tr key={v.verse_num} className="border-t border-[#E8E4E1]">
+                  <td className="px-2 py-1 font-bold">{v.verse_num}</td>
+                  <td className="px-2 py-1">{fmtMs(v.start_ms)}</td>
+                  <td className="px-2 py-1">
+                    {(v.lines || []).map((ln, i) => (
+                      <div key={i} className="truncate max-w-[220px]" lang={lang}>
+                        <span className="text-[#989EA4]">[{fmtMs(ln.start_ms)}]</span> {ln.text}
+                      </div>
+                    ))}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
