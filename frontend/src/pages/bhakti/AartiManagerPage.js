@@ -354,7 +354,7 @@ export default function AartiManagerPage() {
                       <button onClick={() => openView(item)} className="p-1.5 hover:bg-[#F3EDEA] rounded-md text-[#7A8690] hover:text-[#E95A34]" title="View">
                         <Eye size={16} />
                       </button>
-                      <button onClick={() => openEdit(item)} className="p-1.5 hover:bg-[#F3EDEA] rounded-md text-[#7A8690] hover:text-[#E95A34]" title="Edit">
+                      <button onClick={() => openEdit(item)} data-testid={`edit-item-${item._id}`} className="p-1.5 hover:bg-[#F3EDEA] rounded-md text-[#7A8690] hover:text-[#E95A34]" title="Edit">
                         <Edit size={16} />
                       </button>
                       {user?.role === 'super_admin' && (

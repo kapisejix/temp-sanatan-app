@@ -92,7 +92,21 @@ Multilingual spiritual platform: React Admin Panel + FastAPI Backend + Expo Mobi
 - **Special aspects** correctly modeled: Mars 4/8, Jupiter 5/9, Saturn 3/10, Rahu/Ketu 5/9.
 - **iteration_14.json**: 39/39 backend pytest pass — mobile auth (signup/login/me/logout + 429 lockout), cross-token isolation, Pratyantardasha math, all 5 yoga rules + strength bucketing, admin regression.
 
-### Session 15: Unified Bhakti Editor + Strict Sync Schema + Expert Audio (Feb 2026 — current)
+### Session 16: Edit-in-Drawer Refactor + Unified Collection Resolver (Feb 2026 — current)
+- **Full-screen right-drawer** `/app/frontend/src/pages/BhaktiEditorDrawer.js` — the 5-tab Unified Editor is now mounted **inside each Bhakti Category manager page** (Chalisa, Aarti, Namavali, Sahasranama, Vedic Mantras, Stotrams, Suktams, Ashtakam, Shatkam, Kavacham, Nam Ramayanam). No more standalone "Bhakti Editor" sidebar entry.
+- **Beginner / Expert mode toggle** in the drawer header:
+  - *Expert* → shows full 5 tabs including the raw Audio-Sync JSON editor + Expert audio variants (up to 4 MP3s).
+  - *Beginner* → hides Audio-Sync JSON and the Expert variants upload UI; surfaces a new **Learner Mode preview tab** that plays **Guru → Student → Student (2x repeat)** using Google TTS — mirrors the mobile Beginner Mode experience so admins can QA pronunciation before publishing.
+  - For **Aarti** the toggle is hidden entirely (aarti is consumption-only, no Guru/Shishya learning loop).
+- **Per-language Verse Meanings inside verse edit** — language chips (hi/en/sa/mr/gu/ta/te/bn) render inside the verse-edit block; switching a chip loads that language's meaning from `GET /content/verses/:id/meanings` and the Save button upserts dirty edits via `POST /content/verses/:id/meanings`.
+- **Unified Collection Resolver** (backend) — added `_resolve_item_collections(item_id)` + `_resolve_verse_collection(verse_id)` helpers in `server.py`. Every `/content/items/:id…` and `/content/verses/:id…` endpoint now transparently serves items from either `content_items` + `content_verses` (legacy Chalisa seeds) or `bhakti_items` + `bhakti_verses` (newer Bhakti Category seeds). Fixes the iter17 critical bug where editing Aarti / Namavali / Sahasranama etc. items threw 404.
+- **Sidebar cleanup** — removed the "Bhakti Editor" top-level entry; kept Bhakti Categories dropdown intact.
+- **Import Wizard auto-redirect** — after `POST /admin/import-wizard/publish/:upload_id`, the frontend now navigates to the correct category-manager page `/admin/{category}-manager?edit=:first_item_id` (instead of `/admin/bhakti/editor/:id`), which auto-opens the drawer on the newly imported item.
+- **Mobile Beginner Mode loop** refined from uniform 3-iteration repeat to distinct Guru pause (1200ms) vs Student pauses (900ms) so the "teacher says then students repeat" cadence feels natural.
+- **Testability** — every Edit action button now carries `data-testid="edit-item-{id}"`; drawer tabs carry `drawer-tab-{content,verses,audio,sync,learner,publish}`; meaning chips carry `meaning-lang-{code}`.
+- **iteration_18.json**: 20/20 backend pytest pass (8 new resolver tests in `test_iter18_bhakti_collection_resolver.py` + 12 iter16 regression tests) in 3.4s; Aarti drawer opens successfully end-to-end; 0 critical / 0 minor backend issues.
+
+### Session 15: Unified Bhakti Editor + Strict Sync Schema + Expert Audio (Feb 2026)
 - **Unified Bhakti Editor** `/app/frontend/src/pages/BhaktiUnifiedEditor.js` with 5 tabs:
   - **Content** — title (hi/en/sa), deity, thumbnail, supported languages, per-language description tabs (hybrid multilingual: `content_items.languages.{lang}.title/description` added alongside legacy flat fields)
   - **Verses** — auto-opens FIRST verse in edit mode on load (reduces clicks); inline add/edit forms reuse existing `/content/verses/*` APIs

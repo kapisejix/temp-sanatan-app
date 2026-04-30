@@ -297,7 +297,7 @@ export default function ChalisaManagerPage() {
                 <td className="px-4 py-3">
                   <div className="flex items-center justify-end gap-1">
                     <button onClick={() => openView(item)} className="p-1.5 hover:bg-[#F3EDEA] rounded-md text-[#7A8690] hover:text-[#E95A34]"><Eye size={16} /></button>
-                    <button onClick={() => openEdit(item)} className="p-1.5 hover:bg-[#F3EDEA] rounded-md text-[#7A8690] hover:text-[#E95A34]"><Edit size={16} /></button>
+                    <button onClick={() => openEdit(item)} data-testid={`edit-item-${item._id}`} title="Edit" className="p-1.5 hover:bg-[#F3EDEA] rounded-md text-[#7A8690] hover:text-[#E95A34]"><Edit size={16} /></button>
                     {user?.role === 'super_admin' && (<button onClick={() => handleDelete(item._id)} className="p-1.5 hover:bg-red-50 rounded-md text-[#7A8690] hover:text-red-600"><Trash2 size={16} /></button>)}
                   </div>
                 </td>
