@@ -2,7 +2,98 @@
 
 > Goal: bring the **full Sanatan Saathi stack** (FastAPI backend + React admin + Expo mobile) up on a fresh laptop in under 30 minutes.
 
+There are **two ways** to run the stack locally:
+
+- **Path A — Docker (recommended for a one-command boot)** → see [§A](#a-docker-one-command-boot).
+- **Path B — Native installs** (Python venv, Yarn, MongoDB) → see [§1 onwards](#1-prerequisites).
+
+Pick one. Don't mix.
+
 ---
+
+## A. Docker (one-command boot)
+
+### Prerequisites
+- **Docker Desktop 4.30+** (macOS / Windows) **or** Docker Engine 24+ with the Compose plugin (Linux).
+- 4 GB free RAM, ~3 GB disk for the images.
+
+### Step 1 — copy env templates
+```bash
+cp backend/.env.example   backend/.env
+cp frontend/.env.example  frontend/.env
+cp expo-app/.env.example  expo-app/.env
+```
+Edit `backend/.env` and set at minimum:
+- `JWT_SECRET` — `python -c "import secrets;print(secrets.token_hex(32))"`
+- `ADMIN_EMAIL` / `ADMIN_PASSWORD` — your seed admin
+- `EMERGENT_LLM_KEY` — only if you use AI features (or follow `EMERGENT_DEPENDENCIES.md` to remove)
+
+> `MONGO_URL` and `DB_NAME` are **automatically overridden** inside the compose stack to point at the `mongo` container (`mongodb://mongo:27017`, db `sanatan_saathi`). You can leave the `.env` values as-is.
+
+### Step 2 — bring it up
+```bash
+docker compose up
+```
+On first run this builds the backend (~3 min) and frontend (~2 min) images. Subsequent runs reuse the cache.
+
+### Ports
+| Service | Container | Host | Purpose |
+|---|---|---|---|
+| `mongo` | 27017 | **27017** | MongoDB (use `mongosh mongodb://localhost:27017`) |
+| `backend` | 8001 | **8001** | FastAPI — `http://localhost:8001/api/` and `http://localhost:8001/docs` |
+| `frontend` | 3000 | **3000** | React admin — `http://localhost:3000` |
+| `expo` *(opt-in)* | 8081, 19000–19002 | **8081, 19000–19002** | Expo Metro & DevTools |
+
+### Step 3 — open the apps
+- Admin panel → **http://localhost:3000/login** (use the admin creds from `backend/.env`)
+- Backend health → **http://localhost:8001/api/**
+- Swagger UI → **http://localhost:8001/docs**
+
+### Step 4 (optional) — Expo mobile app
+
+Expo is **opt-in** because Docker Desktop's NAT layer breaks the QR-code LAN handshake on macOS / Windows. On Linux it generally works.
+
+```bash
+docker compose --profile expo up
+```
+
+Then either:
+- **macOS / Windows**: switch the Expo CLI to `--tunnel` mode by editing `docker-compose.yml`'s `expo` service `command:` to `["yarn", "start", "--tunnel"]`. Slower, but the QR works from anywhere.
+- **Linux**: works as-is in `--lan` mode if your phone is on the same Wi-Fi.
+
+> Many teams just run Expo natively (`cd expo-app && yarn start`) and let docker-compose handle Mongo + backend + frontend only. That is the fastest combo on macOS.
+
+### Common operations
+| Goal | Command |
+|---|---|
+| Tail logs | `docker compose logs -f backend` |
+| Restart one service | `docker compose restart backend` |
+| Rebuild after `requirements.txt` change | `docker compose build backend && docker compose up -d backend` |
+| Stop everything | `docker compose down` |
+| **Wipe the DB** | `docker compose down -v` *(removes the `mongo_data` volume)* |
+| Shell into a container | `docker compose exec backend bash` |
+| Re-seed admin user | `docker compose exec mongo mongosh sanatan_saathi --eval "db.admin_users.deleteMany({})"` then restart backend |
+
+### Assumptions documented
+- **Hot reload works** because `./backend`, `./frontend`, `./expo-app` are bind-mounted. Backend uses `uvicorn --reload`; frontend uses CRA polling (`CHOKIDAR_USEPOLLING=true`).
+- **`node_modules` are kept inside the container** via an anonymous volume — your host's empty `node_modules` won't shadow the image's installed one.
+- **`MONGO_URL` is forced to `mongodb://mongo:27017`** in the backend container regardless of what `.env` says, so the same `.env` file works for both Docker and native dev.
+- **`REACT_APP_BACKEND_URL` is forced to `http://localhost:8001`** (the browser runs on the host, not in the container).
+- **`emergentintegrations`** is installed from the Emergent CloudFront index inside the backend image. If you can't reach that index from your network, follow [`EMERGENT_DEPENDENCIES.md`](./EMERGENT_DEPENDENCIES.md) Option B.
+- **DB_NAME defaults to `sanatan_saathi`** in the compose override — change in `docker-compose.yml` if you want a different name.
+
+### Troubleshooting (Docker)
+| Symptom | Fix |
+|---|---|
+| `port is already allocated` | Another service uses 3000 / 8001 / 27017 → stop it or change the host port in `docker-compose.yml`. |
+| Backend logs `No module named 'emergentintegrations'` | The CloudFront index was unreachable during build. Rebuild on a different network or use `EMERGENT_DEPENDENCIES.md` Option B. |
+| Frontend not hot-reloading | Confirm `CHOKIDAR_USEPOLLING=true` is set (compose already does this). On Windows, also enable `vmcompute` integration in Docker Desktop. |
+| Mongo won't start with "WiredTiger" errors after a crash | `docker compose down -v` and restart (wipes data — only safe in dev). |
+| `docker compose up` builds then exits cleanly | First run after a Dockerfile change can race with the bind mount. Run `docker compose up` again. |
+
+---
+
+## B. Native installs (no Docker)
 
 ## 1. Prerequisites
 

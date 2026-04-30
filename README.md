@@ -40,6 +40,14 @@
    ```
 
 3. **Run the stack** (see `docs/SETUP.md` for full instructions):
+
+   **Option A — Docker (one command):**
+   ```bash
+   docker compose up
+   ```
+   Boots Mongo (27017), backend (8001), and the React admin (3000). For Expo: `docker compose --profile expo up`.
+
+   **Option B — Native:**
    ```bash
    # Terminal 1 — backend
    cd backend && uvicorn server:app --port 8001 --reload

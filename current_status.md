@@ -12,6 +12,12 @@ _Last updated: 2026-04-30 (Session: P0 verification)_
   - `.env.example` templates created for backend / frontend / expo-app
   - `.gitignore` updated to allow `.env.example` files
   - Root `README.md` rewritten as a project landing page
+- **Docker compose stack** → ✅ DONE (no code changes)
+  - `docker-compose.yml` (mongo, backend, frontend, expo opt-in profile)
+  - `backend/Dockerfile` (WORKDIR `/app/backend` to honor hardcoded absolute paths in server.py)
+  - `frontend/Dockerfile`, `expo-app/Dockerfile`
+  - `.dockerignore` per service
+  - SETUP.md updated with **Path A — Docker (one command)** section
 
 ## P0 Verification Results (iteration_22.json)
 | Item | Result |

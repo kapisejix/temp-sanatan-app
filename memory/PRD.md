@@ -316,3 +316,20 @@ Multilingual spiritual platform: React Admin Panel + FastAPI Backend + Expo Mobi
 - `/app/.gitignore` updated with `!**/.env.example` negation so the templates ship with the repo.
 - `/app/README.md` rewritten as a proper project landing page pointing to `/docs/`.
 - No source code touched. Backend + frontend services remained running throughout.
+
+## Session 24 (Feb 30 2026) — Docker compose stack (no code changes)
+
+**Goal:** single-command local boot via Docker. Strictly Dockerfiles + compose + docs. **Zero application code changes.**
+
+- `/app/docker-compose.yml` — 4 services:
+  - `mongo` (mongo:7, port 27017, named volume `mongo_data`, healthcheck)
+  - `backend` (FastAPI, port 8001, depends on mongo healthy, healthcheck on `/api/`)
+  - `frontend` (CRA dev server, port 3000)
+  - `expo` (Metro bundler 8081/19000-19002, opt-in via `--profile expo`)
+- `/app/backend/Dockerfile` — Python 3.11-slim, **WORKDIR `/app/backend`** so the four hardcoded absolute paths in `server.py` (`/app/backend/static/audio`, etc.) resolve without any code edit. Installs `emergentintegrations` from the Emergent CloudFront index.
+- `/app/frontend/Dockerfile` — Node 20-slim, CRA dev server with `CHOKIDAR_USEPOLLING=true` for hot reload.
+- `/app/expo-app/Dockerfile` — Node 20-slim, Expo Metro `--lan` mode by default.
+- `.dockerignore` per service to keep image builds fast.
+- `docker-compose.yml` overrides `MONGO_URL=mongodb://mongo:27017` and `DB_NAME=sanatan_saathi` so the same `.env` works for native dev and Docker.
+- `docs/SETUP.md` rewritten with **Path A (Docker)** + **Path B (Native)**, including ports table, common ops, troubleshooting, and explicit assumptions list.
+- Verified compose YAML parses cleanly (4 services, 3 named volumes, port mappings sane). **Not actually run** in this preview (Docker is not available in the Emergent Kubernetes pod) — user must `docker compose up` locally.

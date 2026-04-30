@@ -1,0 +1,123 @@
+# =====================================================================
+# Sanatan Saathi — Local development stack
+# Single command:   docker compose up
+# Reset DB:         docker compose down -v
+# Include Expo:     docker compose --profile expo up
+# =====================================================================
+#
+# Services:
+#   mongo     →  MongoDB 7 (port 27017)
+#   backend   →  FastAPI (port 8001), depends on mongo
+#   frontend  →  React admin (port 3000)
+#   expo      →  Expo Metro bundler (ports 8081/19000-19002), opt-in via profile
+#
+# Source code is bind-mounted from the host so hot reload works.
+#
+# Assumptions:
+#   - You have copied the .env.example templates to real .env files
+#       (backend/.env, frontend/.env, expo-app/.env).
+#   - Inside docker-compose, MONGO_URL is overridden to point to the
+#     "mongo" service hostname; your backend/.env value is ignored for
+#     this variable only (so you can keep "mongodb://localhost:27017"
+#     in .env for native dev without conflict).
+#   - Frontend's REACT_APP_BACKEND_URL is forced to http://localhost:8001
+#     because the browser runs on the host, not inside the container.
+#   - Expo (mobile) is opt-in: `docker compose --profile expo up`. On
+#     macOS / Windows, prefer running Expo natively (`cd expo-app && yarn start`)
+#     because Docker Desktop's NAT breaks the QR-code LAN handshake.
+# =====================================================================
+
+services:
+  # ---------------- MongoDB ----------------
+  mongo:
+    image: mongo:7
+    container_name: sanatan-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ping:1}).ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------- Backend (FastAPI) ----------------
+  backend:
+    build:
+      context: ./backend
+    container_name: sanatan-backend
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    ports:
+      - "8001:8001"
+    env_file:
+      - ./backend/.env
+    environment:
+      # Override DB URL so the container talks to the "mongo" service,
+      # not to the host. Leave everything else from .env intact.
+      MONGO_URL: "mongodb://mongo:27017"
+      DB_NAME: "sanatan_saathi"
+    volumes:
+      - ./backend:/app/backend
+      # Persist DOCX/PDF intake and generated media across restarts.
+      - backend_uploads:/app/backend/uploads
+      - backend_static:/app/backend/static
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8001/api/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ---------------- Frontend (React admin) ----------------
+  frontend:
+    build:
+      context: ./frontend
+    container_name: sanatan-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+    environment:
+      # Browser runs on the host → "localhost" maps to the host port mapping.
+      REACT_APP_BACKEND_URL: "http://localhost:8001"
+      WDS_SOCKET_PORT: "0"
+      ENABLE_HEALTH_CHECK: "false"
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
+    volumes:
+      - ./frontend:/app
+      # Keep node_modules inside the container (anonymous volume) — avoids
+      # the host's empty node_modules shadowing the image's installed one.
+      - /app/node_modules
+
+  # ---------------- Expo (opt-in) ----------------
+  expo:
+    profiles: ["expo"]
+    build:
+      context: ./expo-app
+    container_name: sanatan-expo
+    depends_on:
+      - backend
+    ports:
+      - "8081:8081"     # Metro
+      - "19000:19000"   # Expo DevTools
+      - "19001:19001"   # Expo manifest
+      - "19002:19002"   # Expo dev tools UI
+    environment:
+      EXPO_PUBLIC_API_BASE_URL: "http://localhost:8001/api"
+      CHOKIDAR_USEPOLLING: "true"
+      EXPO_DEVTOOLS_LISTEN_ADDRESS: "0.0.0.0"
+      REACT_NATIVE_PACKAGER_HOSTNAME: "0.0.0.0"
+    volumes:
+      - ./expo-app:/app
+      - /app/node_modules
+
+volumes:
+  mongo_data:
+  backend_uploads:
+  backend_static:
