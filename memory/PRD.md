@@ -92,7 +92,26 @@ Multilingual spiritual platform: React Admin Panel + FastAPI Backend + Expo Mobi
 - **Special aspects** correctly modeled: Mars 4/8, Jupiter 5/9, Saturn 3/10, Rahu/Ketu 5/9.
 - **iteration_14.json**: 39/39 backend pytest pass — mobile auth (signup/login/me/logout + 429 lockout), cross-token isolation, Pratyantardasha math, all 5 yoga rules + strength bucketing, admin regression.
 
-### Session 16: Edit-in-Drawer Refactor + Unified Collection Resolver (Feb 2026 — current)
+### Session 18: Aarti Per-Language Media (Audio/Video/Thumbnail/Sync) (Feb 2026 — current)
+- **Aarti-only scope** — no other categories touched.
+- Extended `content_items.languages.{lang}` with `audio_versions[]` (1-4 MP3s per lang), `video`, `thumbnail`, `sync`. Storage at `/app/backend/static/aarti/{item_id}/{lang}/...`, served from `/api/aarti-static/`.
+- New endpoints: POST/DELETE `/content/items/{id}/lang/{lang}/audio(/{slot})`, POST/DELETE video, POST thumbnail (file-only — no URLs), POST sync (rejects timestamp overlaps), GET media bundle.
+- Publish validation — aarti branch requires video OR thumbnail per supported language (aarti has no verse requirement). PATCH /status=published 422s on missing media.
+- **Admin drawer**: 6 tabs for Aarti (adds Video), top language chip bar drives Full Text + Audio + Video + Sync simultaneously. New AartiAudioTab (Slow/Normal/Music/Custom labels), AartiVideoTab (video + thumbnail file pickers), AartiSyncTab (per-lang JSON editor).
+- Mobile groundwork: PUT `/auth/mobile/settings` (preferred_language), GET `/auth/mobile/me` returns it. Mobile fallback resolution: user.preferred_language → hi → first available.
+- Architectural fix: moved `app.include_router(api_router)` to end of server.py so newer routes register.
+- AUDIO_SYNC_GUIDE.md §12 added covering the multilingual aarti flow + fallback + full curl reference.
+- **iteration_20.json**: 27/27 new pytest + 51/51 cumulative regression pass; 0 critical / 0 minor.
+- **Deferred**: mobile ContentDetailScreen update for aarti video/thumbnail/per-lang media (server endpoints ready).
+
+### Session 17: Bug Fixes + Full Text Tab + Author Guide (Feb 2026)
+- DELETE `/bhakti/items/:id` resolver fix (was 404 on content_items items). PUT + PATCH/status got the same fix.
+- New "Full Text" tab with multilingual language sub-tabs + big textarea per lang; saves to `languages.{lang}.full_text` + mirrors to legacy `text_hi`/`text_en` for mobile back-compat.
+- Aarti drawer hid Verses tab (aarti uses Full Text only).
+- /app/AUDIO_SYNC_GUIDE.md (341 lines) author's guide.
+- iteration_19.json: 24/24 backend, 4/4 frontend, 0 issues.
+
+### Session 16: Edit-in-Drawer Refactor + Unified Collection Resolver (Feb 2026)
 - **Full-screen right-drawer** `/app/frontend/src/pages/BhaktiEditorDrawer.js` — the 5-tab Unified Editor is now mounted **inside each Bhakti Category manager page** (Chalisa, Aarti, Namavali, Sahasranama, Vedic Mantras, Stotrams, Suktams, Ashtakam, Shatkam, Kavacham, Nam Ramayanam). No more standalone "Bhakti Editor" sidebar entry.
 - **Beginner / Expert mode toggle** in the drawer header:
   - *Expert* → shows full 5 tabs including the raw Audio-Sync JSON editor + Expert audio variants (up to 4 MP3s).

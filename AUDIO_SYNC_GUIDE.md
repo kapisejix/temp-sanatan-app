@@ -339,3 +339,103 @@ or via curl as shown in §9.
 
 *Last updated: Feb 2026. For schema questions ping the engineering channel — the
 canonical parser lives in `/app/backend/audio_sync_service.py`.*
+
+---
+
+## 12. Aarti Multilingual Workflow (Aarti-only, Session 18)
+
+Aarti items get a **6-tab drawer** (`Content · Full Text · Audio · Video · Audio Sync · Publish`)
+and a **shared Language bar** at the top. The bar lists every language in
+`content_items.supported_languages`. Changing the active chip flips **Full Text,
+Audio, Video, and Audio Sync** tabs to that language's bucket simultaneously
+(Content + Publish stay global).
+
+### Per-language buckets
+
+Each language stores its own media under:
+
+```
+content_items.languages.{lang}:
+  audio_versions: [ {slot: 1..4, label, url, format} ]    # 1-4 MP3s
+  video:          { url, format }                         # MP4/WebM
+  thumbnail:      { url, format }                         # JPG/PNG/WebP, file-only
+  sync:           { sync_map: [...], duration_ms }        # strict nested format
+  full_text:      "…"                                     # single-textarea authoring
+```
+
+### Storage paths
+
+```
+/aarti/{aarti_id}/{lang}/audio/v{slot}.{ext}
+/aarti/{aarti_id}/{lang}/video/main.{ext}
+/aarti/{aarti_id}/{lang}/thumbnail/main.{ext}
+```
+
+Served statically from `/api/aarti-static/...` — no signed-URL cache
+expiry, no external CDN. Uploads replace existing files of the same slot
+so disk usage is bounded.
+
+### Publish validation for Aarti
+
+Instead of "at least 1 verse" (which Aarti doesn't use), the checklist
+requires **video OR thumbnail** for every supported language:
+
+```
+✓ Title (Hi/En/Sa)
+✓ At least one supported language
+✗ Each language has a video OR thumbnail   — missing: mr, gu    ← blocks publish
+✓ Audio-text sync per language (optional)  — all synced         ← warning only
+```
+
+### API reference
+
+```bash
+# Audio (append or replace slot)
+curl -X POST "$API/api/content/items/{ID}/lang/{LANG}/audio" \
+     -H "Authorization: Bearer $TOKEN" \
+     -F "audio=@hi_normal.mp3" -F "label=Normal" [-F "slot=2"]
+
+# Video (replaces existing if any)
+curl -X POST "$API/api/content/items/{ID}/lang/{LANG}/video" \
+     -H "Authorization: Bearer $TOKEN" -F "video=@hi.mp4"
+
+# Thumbnail (file upload only — external URLs are rejected by design)
+curl -X POST "$API/api/content/items/{ID}/lang/{LANG}/thumbnail" \
+     -H "Authorization: Bearer $TOKEN" -F "thumbnail=@hi_cover.jpg"
+
+# Sync (strict nested JSON — overlaps rejected with 400)
+curl -X POST "$API/api/content/items/{ID}/lang/{LANG}/sync" \
+     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+     -d @hi-sync.json
+
+# Public bundle (mobile reads this one endpoint to render the aarti)
+curl    "$API/api/content/items/{ID}/lang/{LANG}/media"
+# → {lang, audio_versions:[…], video, thumbnail, sync, full_text}
+
+# Mobile user preferred language (persists across sessions)
+curl -X PUT "$API/api/auth/mobile/settings" \
+     -H "Authorization: Bearer $USER_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"preferred_language":"hi"}'
+```
+
+### Fallback resolution on mobile
+
+When the mobile app opens an aarti, it resolves media in this order:
+
+```
+1. user.preferred_language  (from User Settings)
+2. 'hi'                     (Hindi, the default canonical bhasha)
+3. first lang with media    (whichever language has any bucket populated)
+```
+
+If none are available the player falls back to the item's `thumbnail_url`
+and disables audio controls.
+
+### Non-Aarti categories are unaffected
+
+Chalisa, Namavali, Sahasranama, Vedic Mantras, Stotrams, Suktams, Ashtakam,
+Shatkam, Kavacham, and Nam Ramayanam keep the original **5-tab drawer** with
+Verses, the primary audio upload, and the global Audio Sync. No Video tab, no
+language bar for those categories.
+
