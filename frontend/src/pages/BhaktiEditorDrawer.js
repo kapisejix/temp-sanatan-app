@@ -366,6 +366,7 @@ function FullTextTab({ item, api, selectedLang, setSelectedLang, onSaved, setErr
       if (texts.hi !== undefined) body.full_text = texts.hi;
       const { data } = await api.put(`/content/items/${item._id}`, body);
       onSaved(data);
+      setDirty(false);
     } catch (e) {
       setError(e?.response?.data?.detail || 'Save failed');
     } finally {
@@ -388,8 +389,16 @@ function FullTextTab({ item, api, selectedLang, setSelectedLang, onSaved, setErr
             Each language has its own textarea. Mobile uses this when verse-by-verse data is missing.
           </p>
         </div>
-        <span className="text-[11px] text-[#7A8690]">
-          {wordCount} word(s) · {charCount} char(s)
+        <span className="text-[11px] text-[#7A8690] flex items-center gap-2">
+          {dirty && (
+            <span
+              data-testid="fulltext-unsaved-badge"
+              className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-semibold"
+            >
+              Unsaved changes
+            </span>
+          )}
+          <span>{wordCount} word(s) · {charCount} char(s)</span>
         </span>
       </div>
 
@@ -417,7 +426,7 @@ function FullTextTab({ item, api, selectedLang, setSelectedLang, onSaved, setErr
       <div className="p-5 space-y-3">
         <textarea
           value={texts[activeLang] || ''}
-          onChange={(e) => setTexts({ ...texts, [activeLang]: e.target.value })}
+          onChange={(e) => { setTexts({ ...texts, [activeLang]: e.target.value }); setDirty(true); }}
           rows={22}
           spellCheck={false}
           lang={activeLang}
@@ -437,7 +446,9 @@ function FullTextTab({ item, api, selectedLang, setSelectedLang, onSaved, setErr
             data-testid="fulltext-save-btn"
             className="flex items-center gap-2 px-5 py-2 bg-[#E95A34] text-white rounded-lg text-sm font-semibold hover:bg-[#d24e2c] disabled:opacity-60"
           >
-            {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save Full Text
+            {saving
+              ? (<><Loader2 size={14} className="animate-spin" /> Saving…</>)
+              : (<><Save size={14} /> {dirty ? 'Save Full Text *' : 'Save Full Text'}</>)}
           </button>
         </div>
       </div>

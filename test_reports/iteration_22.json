@@ -1,0 +1,34 @@
+{
+  "summary": "Iter22 — Frontend P0 verification of BhaktiEditorDrawer at /admin/arti-manager. ALL GREEN. (1) Full Text unsaved indicator: 'Unsaved changes' badge appears on edit, Save button text becomes 'Save Full Text *', both clear after a successful PUT /api/content/items/{id}. (2) Aarti Sync LRC upload: parsed test_aarti.lrc → 2 verses, editor populated with nested JSON ('verses' present, len=745). (3) Aarti Sync JSON upload: parsed test_aarti.json, editor populated (contains 'verses' and 'Test'). (4) Save Sync: POST /api/content/items/{id}/lang/hi/sync succeeded — status banner 'Sync saved for Hindi'. (5) Smoke: Content / Audio / Video / Publish tabs all open without crash overlay or red error banner. The Aarti drawer hides Verses tab (correct — aarti is consumption-only).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "BhaktiEditorDrawer Audio tab (variant slot <select>)", "issues": ["Console hydration warning: '<span> cannot be a child of <option>' — caused by Emergent visual-edit instrumentation injecting <span data-ve-dynamic> wrappers inside <option>{label}</option> at BhaktiEditorDrawer.js:1395. Dev-only noise; does not break the UI. Not a code bug — flagging only as awareness."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/test_reports/iteration_22.json"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "FullTextTab dirty-state wiring is correct: setDirty(true) on every onChange (line 429), setDirty(false) only after a successful PUT (line 369). Badge renders conditionally (line 393-400) and Save button asterisk uses the same flag (line 451). Verified live: badge appeared after one keystroke and was removed after save in one E2E run.",
+    "AartiSyncTab .lrc parser (parseLrcToNested, lines 1541-1574) correctly tokenizes [mm:ss.xxx]text and groups every 2 lines into a verse with backfilled end_ms. .json branch normalizes both flat list and nested forms. handleFile resets the input ref so the same file can be re-uploaded — good UX touch. Both formats verified end-to-end: LRC produced 2 verses, JSON populated editor with 'Test' line.",
+    "Save Sync POSTs to /api/content/items/{id}/lang/{lang}/sync with the parsed JSON body and surfaces backend errors via setError. Verified 200 response → green status banner 'Sync saved for Hindi'.",
+    "Tabs gating: AARTI hides Verses (correct — aarti is one-shot multilingual full text), shows Audio Sync regardless of beginner/expert mode (line 75: mode==='expert' || isAarti). Confirmed in DOM: drawer-tab-verses count=0 when category=aarti.",
+    "Minor / non-blocking: All 7 tabs (content, fulltext, verses-conditional, audio, video, sync, publish) carry data-testid='drawer-tab-{id}' and the Sync tab editor uses data-testid='aarti-sync-editor-{lang}', file input data-testid='aarti-sync-file-{lang}', save button data-testid='aarti-sync-save-{lang}' — all the IDs referenced in the review request are wired and clickable.",
+    "Dev-only console warning: <span> wrapper injected by Emergent visual-edit annotator inside <select><option> at line 1395 of BhaktiEditorDrawer.js triggers React hydration warning. Source is the build-time instrumentation (x-ve-dynamic spans) — NOT app code. Does not affect functionality."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "N/A — backend not retested per request",
+    "frontend": "100% — 5/5 P0 verifications pass + 4/4 smoke tabs open cleanly"
+  },
+  "test_credentials": "admin@sanatansaathi.com / SanatanAdmin@2026 (super_admin)",
+  "seed_data_creation": "Created /tmp/test_uploads/test_aarti.lrc (4-line LRC) and /tmp/test_uploads/test_aarti.json (1-verse nested) as throwaway upload fixtures. The Save Sync POST persisted the JSON test fixture as the new hi-language sync for AARTI_ID=69f1e1a77488457efddb02b7 — i.e. the previous iter20-uploaded hi sync_map has now been OVERWRITTEN with a single 'Test' verse. If iter21 regression depends on the original hi sync, it will need to be re-uploaded via iter20 fixtures.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "P0 (LRC/JSON upload + unsaved badge) is FULLY VERIFIED at /admin/arti-manager → click [data-testid=edit-item-69f1e1a77488457efddb02b7]. All data-testids match: drawer-tab-{content|fulltext|audio|video|sync|publish}, fulltext-textarea-{lang}, fulltext-unsaved-badge, fulltext-save-btn, aarti-sync-file-{lang}, aarti-sync-editor-{lang}, aarti-sync-save-{lang}, drawer-status, drawer-error. Replay command: see Playwright script in iter22 finish summary. NOTE: iter22's Save Sync overwrote the hi-language sync for the single Aarti item — if iter21 backend regression (test_hi_bundle_has_thumbnail_and_sync) needs the original 5-verse fixture, re-upload before running.",
+  "rca of the issue": "N/A — no issues found. Both P0 features (LRC/JSON sync upload + Full Text unsaved indicator) are fully wired, clickable, persist via the right APIs, and surface success/error banners correctly. Only noise is a dev-only React hydration warning from Emergent's visual-edit annotator wrapping <option> children with <span>, which is unrelated to app code."
+}
