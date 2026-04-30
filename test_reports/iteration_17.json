@@ -1,0 +1,53 @@
+{
+  "summary": "Iteration 17 - Bhakti Editor Drawer integration testing. Backend regression: 12/12 iter16 cases STILL PASS + 3 new verse-meanings tests PASS (15/15 total). Frontend Chalisa flow ALL GREEN: ?edit= auto-opens drawer, Edit-icon-click also opens drawer, 5 tabs render (Content/Verses/Audio/Audio Sync/Publish), mode-toggle visible, Beginner mode hides Audio Sync and shows Learner Mode tab, Expert restores Sync and hides Learner, Verses tab auto-edits first verse with VERSE MEANING block + Hindi/English/Sanskrit chips + verse-meaning-{code} textareas, meaning persistence verified end-to-end (POST /content/verses/:id/meanings round-trips in GET, and TEST_iter17_en_xxx written by pytest is rendered by the drawer's English chip), Publish tab renders all 6 checks (title/primary_language/verses/deity/audio/sync_map) and shows unpublish-btn (Hanuman is already published), drawer-close-btn strips ?edit= from URL. Sidebar correctly has nav-admin/bhakti/editor REMOVED and 'Bhakti Editor' label gone; bhakti-categories-toggle is the only entry-point. Legacy /admin/verse-manager, /admin/audio-sync, /admin/bhakti/editor all redirect to /admin/chalisa-manager. CRITICAL FRONTEND-BACKEND INTEGRATION BUG on Aarti (and likely all non-Chalisa categories): clicking Edit on an Aarti row opens the drawer but immediately renders 'Item not found - it may have been deleted.' with a 404 in console. Root cause: Bhakti category managers list rows from /api/bhakti/items, but BhaktiEditorDrawer fetches via /api/content/items/:id (different MongoDB collection). Hanuman Chalisa happens to exist in BOTH collections with the same _id (legacy migration), which is why Chalisa works. All bhakti_items-only items (Aarti, Namavali, Sahasranama, Stotrams, etc.) will fail.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "AartiManagerPage row actions", "issue": "Edit / View / Delete icon buttons have no data-testid (only title='Edit' on AartiManagerPage; ChalisaManagerPage has none). Add data-testid='edit-item-{id}' to make Playwright/regression tests stable.", "selector": "button[onClick=openEdit] in tbody tr", "priority": "MEDIUM"},
+      {"component": "BhaktiEditorDrawer Verses tab - verse meaning", "issue": "No explicit data-testid='save-meaning-btn'. Meaning save is wired to the verse-row 'Save' button which saves both verse text + meaning together; works functionally but harder to assert in tests.", "selector": "Save button inside verse-edit panel", "priority": "LOW"}
+    ],
+    "integration_issues": [
+      {"flow": "Aarti / non-Chalisa Bhakti categories - Edit row to open drawer", "issue": "CRITICAL: Drawer fetches /api/content/items/:id but the listed item._id comes from /api/bhakti/items (separate collection). Non-Chalisa items not present in content_items return 404 -> drawer shows 'Item not found - it may have been deleted.' Console logs 'Failed to load resource: 404'. Reproduced on Aarti 'Shri Ganesh Aarti'. Hanuman Chalisa works only because its _id happens to be present in BOTH collections (legacy data).", "affected_selectors": ["[data-testid=bhakti-editor-drawer]", "text='Item not found'"]}
+    ],
+    "design_issues": [
+      {"screen": "BhaktiEditorDrawer header on Hanuman Chalisa", "issues": ["Header still reports '40 verses' (cached field) while real DB count is 5 (publish-check + Verses tab show 5). Pre-existing from iter16; non-blocking but cosmetic."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter16_unified_editor.py",
+    "/app/backend/tests/test_iter17_verse_meanings.py",
+    "/app/test_reports/pytest/iter17_regression.xml",
+    "/app/test_reports/pytest/iter17_meanings.xml"
+  ],
+  "action_items": [
+    "P0 / CRITICAL: Make BhaktiEditorDrawer work for ALL Bhakti categories (Aarti, Namavali, Sahasranama, Vedic Mantras, Stotrams, Suktams, Ashtakam, Shatkam, Kavacham, Nam Ramayanam). Either (a) point drawer endpoints to /api/bhakti/items/:id (and cousins for verses/audio/sync/publish-check) so a single source of truth is used, or (b) backend: have /api/content/items/:id transparently fall back to bhakti_items when not found in content_items, or (c) one-time migration to mirror all bhakti_items into content_items. Without this, Edit-from-row is broken for every category except Hanuman Chalisa (and any other doc whose _id is duplicated across collections).",
+    "Add data-testid='edit-item-{item._id}' (and view-item / delete-item) to action-cell buttons in ChalisaManagerPage.js, AartiManagerPage.js, and BhaktiCategoryManager.js for testability.",
+    "Optional: reconcile cached verses_count on content_items with live count_documents (40 vs 5 mismatch on Hanuman Chalisa header) - pre-existing from iter16.",
+    "Optional: add explicit data-testid='save-meaning-btn' in the verse-edit panel for cleaner meaning-save assertions."
+  ],
+  "critical_code_review_comments": [
+    "BhaktiEditorDrawer.js exclusively talks to /api/content/items/* (lines 76, 97, 105, 303, 438, 510, 692, 710, 718, 865, 1049, 1058) but every Bhakti category manager (Aarti/Chalisa/Namavali/etc.) sources rows from /api/bhakti/items. The two collections are NOT synchronized - this is the integration breakage.",
+    "ChalisaManagerPage.js Edit handler at line 122 (openEdit) sets drawerItemId = item._id and the drawer auto-fetches /content/items/{that id}. Works only because Hanuman Chalisa _id duplicates in both collections.",
+    "AartiManagerPage.js openEdit (line 147) is correctly wired into the new drawer (good refactor); the only blocker is the wrong API target inside the drawer.",
+    "Sidebar.js correctly drops the 'Bhakti Editor' top-level entry; only bhakti-categories-toggle dropdown remains. App.js correctly redirects /admin/verse-manager, /admin/audio-sync, /admin/bhakti/editor to /admin/chalisa-manager.",
+    "Verse meanings POST/GET (server.py lines 796-816) correctly upserts on (verse_id, language) - no duplicates; 3/3 pytest cases pass. Drawer correctly switches the textarea content when meaning-lang-{code} chip is clicked (verified visually: TEST_iter17_en_1777546582 shows up under English chip after pytest run).",
+    "Publish tab returns all 6 checks; gating logic from iter16 still solid (12/12 backend pass).",
+    "Action-cell icon buttons in Chalisa/Aarti managers lack data-testids - hampers stable e2e assertions on Edit-row click."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter17_verse_meanings.py (new, 3 cases - all pass)"
+  ],
+  "success_rate": {
+    "backend": "100% (15/15: 12 iter16 regression + 3 new verse-meanings)",
+    "frontend": "Chalisa: 100% (drawer, all 5 tabs, mode-toggle, Beginner/Expert switch, verse meanings UI, publish, close strips ?edit=, sidebar cleanup, legacy redirects). Aarti: BROKEN - drawer renders 'Item not found' due to bhakti_items vs content_items collection mismatch. Estimated 1/11 categories functional (Chalisa only)."
+  },
+  "test_credentials": "Admin: admin@sanatansaathi.com / SanatanAdmin@2026",
+  "seed_data_creation": "Pytest test_iter17_verse_meanings wrote 'TEST_iter17_meaning_hi_<ts>' / 'TEST_iter17_updated_<ts>' / 'TEST_iter17_en_<ts>' to verse_meanings collection on Hanuman Chalisa first verse - non-destructive, idempotent (upsert on verse_id+language).",
+  "retest_needed": true,
+  "main_agent_can_self_test": false,
+  "context_for_next_testing_agent": "Repro for the critical Aarti bug: login -> /admin/arti-manager -> click pencil icon (Edit) on 'Shri Ganesh Aarti' row -> drawer opens with header empty + red error box 'Item not found - it may have been deleted.' Network tab shows 404 on /api/content/items/{aarti_id}. Same will happen for every Bhakti category whose item _id is NOT also present in content_items. Hanuman Chalisa Edit works because its _id (69f053c8053b601fc045a5ca) lives in BOTH collections. Backend pytest /app/backend/tests/test_iter17_verse_meanings.py covers POST/GET/upsert verse meanings on Hanuman first-verse_id. iter16 regression /app/backend/tests/test_iter16_unified_editor.py still 12/12 pass in 2.3s. After the integration fix, retest: (1) Edit on first non-Chalisa row in each category opens drawer with full data, (2) verse meaning save round-trips via UI in any non-Chalisa category.",
+  "rca of the issue": "BhaktiEditorDrawer.js was lifted from BhaktiUnifiedEditor (iter16) which was designed against the content_items API surface. When refactored to mount inside Bhakti category managers, the drawer kept its /api/content/items/* call sites but the parent pages list rows from /api/bhakti/items (separate MongoDB collection). The two collections share IDs only for legacy-migrated items (e.g., Hanuman Chalisa). Mitigation options: (A) easiest - in BhaktiEditorDrawer replace /content/items/:id with /bhakti/items/:id and verify equivalent verses / audio / sync / publish-check endpoints exist for /bhakti or proxy to content. (B) backend transparent fallback in /content/items/:id to bhakti_items collection. (C) seed migration to mirror bhakti_items into content_items. Recommendation: (A) if /bhakti/items/:id already supports verses/audio/sync; otherwise (B)."
+}

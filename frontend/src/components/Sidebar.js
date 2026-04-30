@@ -30,7 +30,6 @@ const navItems = [
   { to: '/admin/import-wizard', icon: Upload, label: 'Import Wizard' },
   { to: '/admin/search', icon: Search, label: 'Smart Search' },
   { to: '/admin/content-manager', icon: FileText, label: 'Content Manager' },
-  { to: '/admin/bhakti/editor', icon: BookOpen, label: 'Bhakti Editor' },
   { to: '/admin/multilingual-editor', icon: Languages, label: 'Multilingual Editor' },
   { to: '/admin/daily-scheduler', icon: CalendarClock, label: 'Daily Scheduler' },
   { section: 'bhakti', label: 'Bhakti Categories', icon: BookHeart },

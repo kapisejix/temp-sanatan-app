@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { BookOpen, Plus, Search, Edit, Trash2, Eye, Download, Volume2, X, Check, Play, Layers, FileText } from 'lucide-react';
+import BhaktiEditorDrawer from '../BhaktiEditorDrawer';
 
 const CHALISA_SUBCATEGORIES = [
   { value: '', label: 'All Sub-categories' },
@@ -29,6 +31,9 @@ const LANGUAGES = [
 
 export default function ChalisaManagerPage() {
   const { api, user } = useAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [drawerItemId, setDrawerItemId] = useState(null);
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -115,19 +120,18 @@ export default function ChalisaManagerPage() {
   };
 
   const openEdit = (item) => {
-    setEditItem(item);
-    setFormData({
-      title_hi: item.title_hi || '', title_en: item.title_en || '',
-      deity: item.deity || '', deity_hi: item.deity_hi || '',
-      subcategory: item.subcategory || 'devta',
-      description_hi: item.description_hi || '', description_en: item.description_en || '',
-      audio_url: item.audio_url || '', video_url: item.video_url || '',
-      supported_languages: item.supported_languages || ['hi', 'en', 'sa'],
-      tags: item.tags || [], verses: item.verses || [], full_text: item.full_text || '',
-      audio_timestamps: item.audio_timestamps || []
-    });
-    setShowModal(true);
+    // New flow: open the full-screen Unified Editor drawer (5 tabs, Beginner/Expert toggle,
+    // per-language verse meanings). The old in-place modal is retired for edit.
+    setDrawerItemId(item._id);
   };
+
+  // Support `?edit=<id>` query param (used by Import Wizard auto-redirect).
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const eid = params.get('edit');
+    if (eid && eid !== drawerItemId) setDrawerItemId(eid);
+    // eslint-disable-next-line
+  }, [location.search]);
 
   const openView = async (item) => {
     try {
@@ -493,6 +497,20 @@ export default function ChalisaManagerPage() {
           </div>
         </div>
       )}
+
+      {/* Unified Editor Drawer */}
+      <BhaktiEditorDrawer
+        api={api}
+        itemId={drawerItemId}
+        category="chalisa"
+        open={!!drawerItemId}
+        onClose={() => {
+          setDrawerItemId(null);
+          // strip ?edit= so user can close without hitting browser back
+          if (location.search.includes('edit=')) navigate(location.pathname, { replace: true });
+        }}
+        onChange={() => fetchItems()}
+      />
     </div>
   );
 }

@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { Scroll, Plus, Search, Edit, Trash2, Eye, Download, Volume2, X, Check, Play, Layers, FileText, Upload, Globe } from 'lucide-react';
 import LivePreviewModal from '../../components/LivePreviewModal';
+import BhaktiEditorDrawer from '../BhaktiEditorDrawer';
 
 const LANGUAGES = [
   { code: 'hi', label: 'Hindi', label_native: 'हिन्दी' },
@@ -209,6 +211,9 @@ const CATEGORY_CONFIG = {
 export default function BhaktiCategoryManager({ categoryKey }) {
   const config = CATEGORY_CONFIG[categoryKey] || CATEGORY_CONFIG.namavali;
   const { api, user } = useAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [drawerItemId, setDrawerItemId] = useState(null);
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -301,19 +306,17 @@ export default function BhaktiCategoryManager({ categoryKey }) {
   };
 
   const openEdit = (item) => {
-    setEditItem(item);
-    setFormData({
-      title_hi: item.title_hi || '', title_en: item.title_en || '',
-      deity: item.deity || '', deity_hi: item.deity_hi || '',
-      subcategory: item.subcategory || '',
-      description_hi: item.description_hi || '', description_en: item.description_en || '',
-      audio_url: item.audio_url || '', video_url: item.video_url || '',
-      supported_languages: item.supported_languages || ['hi', 'en', 'sa'],
-      tags: item.tags || [], verses: item.verses || [], full_text: item.full_text || '',
-      audio_timestamps: item.audio_timestamps || []
-    });
-    setShowModal(true);
+    // Open the unified Bhakti Editor drawer (5 tabs + Beginner/Expert + per-language meanings)
+    setDrawerItemId(item._id);
   };
+
+  // Auto-open drawer when URL has ?edit=<id> (used by Import Wizard redirect)
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const eid = params.get('edit');
+    if (eid && eid !== drawerItemId) setDrawerItemId(eid);
+    // eslint-disable-next-line
+  }, [location.search]);
 
   const openView = async (item) => {
     setPreviewItemId(item._id);
@@ -674,6 +677,19 @@ export default function BhaktiCategoryManager({ categoryKey }) {
       {showLivePreview && previewItemId && (
         <LivePreviewModal itemId={previewItemId} onClose={() => { setShowLivePreview(false); setPreviewItemId(null); }} />
       )}
+
+      {/* Unified Editor Drawer */}
+      <BhaktiEditorDrawer
+        api={api}
+        itemId={drawerItemId}
+        category={config.category}
+        open={!!drawerItemId}
+        onClose={() => {
+          setDrawerItemId(null);
+          if (location.search.includes('edit=')) navigate(location.pathname, { replace: true });
+        }}
+        onChange={() => fetchItems()}
+      />
     </div>
   );
 }

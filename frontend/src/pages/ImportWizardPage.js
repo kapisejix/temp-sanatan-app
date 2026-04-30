@@ -105,10 +105,25 @@ export default function ImportWizardPage() {
     try {
       const { data } = await api.post(`/admin/import-wizard/publish/${uploadId}`);
       setPublishResult(data);
-      // Auto-redirect to the unified editor for the first imported item
       const firstId = Array.isArray(data.item_ids) ? data.item_ids[0] : null;
       if (firstId) {
-        navigate(`/admin/bhakti/editor/${firstId}?tab=content`);
+        // Redirect into the category's own manager page so the Unified Editor drawer
+        // opens inline (per product decision: "edit happens only under each category").
+        const CATEGORY_ROUTES = {
+          chalisa: '/admin/chalisa-manager',
+          aarti: '/admin/arti-manager',
+          namavali: '/admin/namavali-manager',
+          sahasranama: '/admin/sahasranama-manager',
+          vedic_mantra: '/admin/vedic-mantra-manager',
+          stotram: '/admin/stotram-manager',
+          suktam: '/admin/suktam-manager',
+          ashtakam: '/admin/ashtakam-manager',
+          shatkam: '/admin/shatkam-manager',
+          kavacham: '/admin/kavacham-manager',
+          nam_ramayanam: '/admin/nam-ramayanam-manager',
+        };
+        const target = CATEGORY_ROUTES[category] || `/admin/bhakti/editor/${firstId}`;
+        navigate(target.includes('?') ? `${target}&edit=${firstId}` : `${target}?edit=${firstId}`);
         return;
       }
       setStep(4);

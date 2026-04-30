@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { Music, Plus, Search, Edit, Trash2, Eye, Download, Volume2, ChevronDown, X, Check, Play, Pause, Upload } from 'lucide-react';
+import BhaktiEditorDrawer from '../BhaktiEditorDrawer';
 
 const AARTI_SUBCATEGORIES = [
   { value: '', label: 'All Sub-categories' },
@@ -30,6 +32,9 @@ const LANGUAGES = [
 
 export default function AartiManagerPage() {
   const { api, user } = useAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [drawerItemId, setDrawerItemId] = useState(null);
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -140,27 +145,17 @@ export default function AartiManagerPage() {
   };
 
   const openEdit = (item) => {
-    setEditItem(item);
-    setFormData({
-      title_hi: item.title_hi || '',
-      title_en: item.title_en || '',
-      deity: item.deity || '',
-      deity_hi: item.deity_hi || '',
-      subcategory: item.subcategory || 'ganesha',
-      description_hi: item.description_hi || '',
-      description_en: item.description_en || '',
-      music_type: item.music_type || 'Traditional harmonium',
-      best_occasion: item.best_occasion || '',
-      audio_url: item.audio_url || '',
-      video_url: item.video_url || '',
-      thumbnail_url: item.thumbnail_url || '',
-      supported_languages: item.supported_languages || ['hi', 'en', 'sa'],
-      tags: item.tags || [],
-      full_text: item.full_text || '',
-      audio_timestamps: item.audio_timestamps || []
-    });
-    setShowModal(true);
+    // Open the unified Bhakti Editor drawer (Aarti → no Beginner/Expert toggle,
+    // no Learner tab per product decision).
+    setDrawerItemId(item._id);
   };
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const eid = params.get('edit');
+    if (eid && eid !== drawerItemId) setDrawerItemId(eid);
+    // eslint-disable-next-line
+  }, [location.search]);
 
   const openView = async (item) => {
     try {
@@ -511,6 +506,19 @@ export default function AartiManagerPage() {
           </div>
         </div>
       )}
+
+      {/* Unified Editor Drawer (Aarti — no Beginner/Expert toggle) */}
+      <BhaktiEditorDrawer
+        api={api}
+        itemId={drawerItemId}
+        category="aarti"
+        open={!!drawerItemId}
+        onClose={() => {
+          setDrawerItemId(null);
+          if (location.search.includes('edit=')) navigate(location.pathname, { replace: true });
+        }}
+        onChange={() => fetchItems()}
+      />
     </div>
   );
 }

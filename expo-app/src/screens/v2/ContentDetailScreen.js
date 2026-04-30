@@ -230,12 +230,14 @@ export default function ContentDetailScreen({ navigation, route }) {
       setBeginnerLoopNum(v.verse_num);
       setActiveVerseNum(v.verse_num);
 
-      // Play 3 times: Guru → 1.2s pause → Student (replay) → pause
+      // Play Guru → 1.2s pause → Student → Student (2 repeats per verse)
+      // Guru voice (1x) + Student repeat (2x) = 3 total plays. Last play is the 2nd student repeat.
       for (let loop = 0; loop < 3; loop++) {
         if (!beginnerRef.current.active) break;
         try { await playVerseTTS(v.text); } catch { /* skip on fail */ }
         if (!beginnerRef.current.active) break;
-        await new Promise((r) => setTimeout(r, 1200));
+        // Shorter pause after Guru, longer after student repeats
+        await new Promise((r) => setTimeout(r, loop === 0 ? 1200 : 900));
       }
     }
     if (beginnerRef.current.active) {
