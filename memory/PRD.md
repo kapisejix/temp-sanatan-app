@@ -92,7 +92,31 @@ Multilingual spiritual platform: React Admin Panel + FastAPI Backend + Expo Mobi
 - **Special aspects** correctly modeled: Mars 4/8, Jupiter 5/9, Saturn 3/10, Rahu/Ketu 5/9.
 - **iteration_14.json**: 39/39 backend pytest pass — mobile auth (signup/login/me/logout + 429 lockout), cross-token isolation, Pratyantardasha math, all 5 yoga rules + strength bucketing, admin regression.
 
-### Session 14: Personalized Dharma Engine + Panchang v2 + Festivals + DOCX Bug Fix (Feb 2026 — current)
+### Session 15: Unified Bhakti Editor + Strict Sync Schema + Expert Audio (Feb 2026 — current)
+- **Unified Bhakti Editor** `/app/frontend/src/pages/BhaktiUnifiedEditor.js` with 5 tabs:
+  - **Content** — title (hi/en/sa), deity, thumbnail, supported languages, per-language description tabs (hybrid multilingual: `content_items.languages.{lang}.title/description` added alongside legacy flat fields)
+  - **Verses** — auto-opens FIRST verse in edit mode on load (reduces clicks); inline add/edit forms reuse existing `/content/verses/*` APIs
+  - **Audio** — Primary audio upload + up to 4 Expert-Mode variants with labels (Male/Female/Slow/Fast etc). Delete per variant.
+  - **Audio Sync** — JSON editor pre-filled with strict nested format `{audio_file, duration_ms, verses:[{verse_id,start_ms,end_ms,lines:[{text,start_ms,end_ms}]}]}`. Live preview table of parsed sync map with lines[].
+  - **Publish** — 6-check checklist (title/language/verses required; deity/audio/sync optional) with publish/unpublish actions.
+- **Picker page** `/app/frontend/src/pages/BhaktiEditorPicker.js` at `/admin/bhakti/editor` — searchable list of all content items → click Edit → routes to editor.
+- **Legacy routes redirect** — `/admin/verse-manager` and `/admin/audio-sync` now `<Navigate>` to the picker automatically. Sidebar consolidated: "Bhakti Editor" entry replaces old "Verse Manager" + "Audio Sync".
+- **Import Wizard** auto-redirect — after `POST /admin/import-wizard/publish/{upload_id}` succeeds, frontend navigates to `/admin/bhakti/editor/{first_item_id}?tab=content`. Backend returns `item_ids[]` on publish.
+- **Backend extensions**:
+  - `POST /api/content/items/{id}/audio` now accepts `variant_slot=1..4` + `variant_label` → stored at `items/{id}_v{slot}.{ext}`, merged into `audio_sync.variants[]`.
+  - `DELETE /api/content/items/{id}/audio/variants/{slot}` — removes file + metadata, preserves others.
+  - `POST /api/content/items/{id}/audio/sync` — strict nested JSON endpoint (auto-detects nested vs flat shape via `verses[0].lines` key).
+  - `audio_sync_service.parse_nested_json_sync` — sort + dedup + backfill end_ms + auto-derive verse text from joined line texts.
+  - `GET /api/content/items/{id}/publish-check` — returns `can_publish` + per-check details for UI.
+  - `PATCH /api/content/items/{id}/status` with `published` now 422s if title/supported_languages/≥1 verse is missing.
+  - `ContentItemCreate` extended with optional `languages: Dict[str, Dict[str,str]]` for hybrid multilingual.
+- **Mobile line-level karaoke** in `ContentDetailScreen.js`:
+  - Parses nested `verse.lines[]` from `/content/items/{id}/audio`, highlights the active LINE inside the active verse (new `lineActive` style: amber background, bold).
+  - Variant picker chip bar (डिफ़ॉल्ट + each variant label) — switching variant unloads+restarts playback.
+- **iteration_16.json**: 12/12 backend pytest pass (primary + variant upload, delete-variant, nested sync round-trip, publish-check, 422 on bare-item publish, import-wizard item_ids[]) + Playwright: 5 tabs, 2 redirects, auto-edit-first-verse, sidebar cleanup — 0 console errors.
+- **Known minor**: cached `total_verses` field on `content_items` (set once at create) can drift from live `count_documents`. Does NOT affect publish validation (uses live count). To reconcile: recompute on verse CRUD — tracked in backlog.
+
+### Session 14: Personalized Dharma Engine + Panchang v2 + Festivals + DOCX Bug Fix (Feb 2026)
 - **Panchang v2 engine** `/app/backend/panchang_engine.py`:
   - Precise tithi/nakshatra/yoga start+end timestamps (Newton-style bisection)
   - Abhijit Muhurta (skipped on Wednesdays), Amrit Kalam (per-nakshatra window), Gulika Kaal, Yamagandam
@@ -165,6 +189,7 @@ Multilingual spiritual platform: React Admin Panel + FastAPI Backend + Expo Mobi
 - [ ] **Mobile Expert Mode** — Consumption + Reel/Video generation flow (deferred from Phase 2 per user request)
 - [ ] Zoom/pan + tap-bottomsheet on Mobile Kundli charts (deferred from Phase 1)
 - [ ] Animated planet transitions between D1↔D9↔D7↔D10 (deferred from Phase 1)
+- [ ] Reconcile cached `content_items.total_verses` with live `count_documents` (minor UI drift noted in iteration_16)
 
 ### P2
 - [ ] Pratyantardasha (3rd-level dasha) ✓ DONE in Session 13
