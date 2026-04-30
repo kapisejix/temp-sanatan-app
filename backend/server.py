@@ -5379,9 +5379,10 @@ async def api_panchang_day(
     p["festivals"] = _detect_festivals(p)
     # Cache for 12h
     try:
+        expires_dt = datetime.now(timezone.utc) + timedelta(hours=12)
         await db.panchang_cache.update_one(
             {"_id": cache_key},
-            {"$set": {**p, "expires_at": (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat()}},
+            {"$set": {**p, "expires_at": expires_dt.isoformat(), "expires_at_dt": expires_dt}},
             upsert=True,
         )
     except Exception:
@@ -5404,10 +5405,14 @@ async def api_dharma_today(
     - Works anonymously too (returns panchang-only rules).
     """
     user = None
+    # Try admin first, then mobile user, else anonymous
     try:
         user = await get_current_admin(request)
     except HTTPException:
-        user = None  # anonymous call
+        try:
+            user = await get_current_app_user(request)
+        except HTTPException:
+            user = None  # anonymous call
 
     panchang = _compute_panchang(lat=lat, lon=lon, tz_name=tz, system=system)
     festivals = _detect_festivals(panchang)
@@ -5697,6 +5702,16 @@ app.include_router(api_router)
 _AUDIO_DIR = "/app/backend/static/audio"
 os.makedirs(_AUDIO_DIR, exist_ok=True)
 app.mount("/api/audio-static", StaticFiles(directory=_AUDIO_DIR), name="audio-static")
+
+
+@app.on_event("startup")
+async def _ensure_indexes():
+    """Create background indexes that aren't critical at boot."""
+    try:
+        # Panchang cache: keep entries for max 24h via expires_at TTL
+        await db.panchang_cache.create_index("expires_at_dt", expireAfterSeconds=0)
+    except Exception:
+        pass
 
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestLoggingMiddleware)

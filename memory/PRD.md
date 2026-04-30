@@ -68,7 +68,7 @@ Multilingual spiritual platform: React Admin Panel + FastAPI Backend + Expo Mobi
 - **Mobile Beginner Mode** (🎓 शिक्षण मोड) — for synced items, plays each verse via Google Cloud TTS 3 times with 1.2s pauses, then advances. Banner shows current verse + Stop button.
 - **iteration_13.json**: 24/24 backend pytest pass + frontend admin flow green.
 
-### Session 13: Mobile Auth + Pratyantardasha + Yoga Engine (Feb 2026 — current)
+### Session 13: Mobile Auth + Pratyantardasha + Yoga Engine (Feb 2026)
 - **Mobile JWT Auth** (followed integration_playbook_expert_v2 playbook):
   - New collection `app_users` (separate from `admin_users`). Bcrypt hashing, PyJWT HS256, 24h access + 7d refresh tokens.
   - 4 endpoints: `POST /api/auth/mobile/signup`, `POST /api/auth/mobile/login`, `GET /api/auth/mobile/me`, `POST /api/auth/mobile/logout` (token blacklisted).
@@ -91,6 +91,29 @@ Multilingual spiritual platform: React Admin Panel + FastAPI Backend + Expo Mobi
 - **New endpoint** `GET /api/yogas` returns `{yogas:[5], summary:{total_present, total_checked, high_strength}}`.
 - **Special aspects** correctly modeled: Mars 4/8, Jupiter 5/9, Saturn 3/10, Rahu/Ketu 5/9.
 - **iteration_14.json**: 39/39 backend pytest pass — mobile auth (signup/login/me/logout + 429 lockout), cross-token isolation, Pratyantardasha math, all 5 yoga rules + strength bucketing, admin regression.
+
+### Session 14: Personalized Dharma Engine + Panchang v2 + Festivals + DOCX Bug Fix (Feb 2026 — current)
+- **Panchang v2 engine** `/app/backend/panchang_engine.py`:
+  - Precise tithi/nakshatra/yoga start+end timestamps (Newton-style bisection)
+  - Abhijit Muhurta (skipped on Wednesdays), Amrit Kalam (per-nakshatra window), Gulika Kaal, Yamagandam
+  - Bhadra (Vishti karana) and Panchak (nakshatras 22-26) flags
+  - North (Purnimanta) vs South (Amanta) toggle
+  - Hindu month name correctly derived (`(sun_sidereal_sign + 1) % 12` rule)
+  - Cached per (date, lat, lon, tz, system) with TTL index for 12h auto-cleanup
+- **Festival Detection Engine** `/app/backend/festival_engine.py` — 25 rules covering Ekadashi/Pradosh/Sankashti/Purnima/Amavasya/Shivratri Masik + 18 major festivals (Diwali, Holi, Janmashtami, Navratri, Dussehra, Karva Chauth, Raksha Bandhan, Guru Purnima, Ram Navami, Hanuman Jayanti, Dhanteras, Bhai Dooj, Chhath, Makar Sankranti, Basant Panchami, Maha Shivratri, Ganesh Chaturthi).
+- **Dharma Engine** `/app/backend/dharma_engine.py` + `/app/backend/dharma_rules.json`:
+  - 70 rules across weekday × dasha × tithi × nakshatra × yoga × festival × Bhadra/Panchak categories
+  - Planet→Deity→Mantra DB for all 9 grahas (mantra, count, day, color, offering, action list)
+  - Rule runner: condition matcher + priority-sort + de-dup-by-focus-planet → Top 5 personalized cards
+  - Works anonymously (panchang-only rules) AND personalized (uses kundli's weak_planets + current MD/AD/PD)
+- **New endpoints**:
+  - `GET /api/panchang/day?lat&lon&tz&date&system` (public, cached) — comprehensive Panchang
+  - `GET /api/dharma/today?lat&lon&tz&system` (auth-optional) — Top-5 personalized guidance cards
+- **Mobile UI**:
+  - `HomeScreen.js` — new "🧠 आज का व्यक्तिगत मार्गदर्शन" section with up-to-5 dharma cards (priority-sorted, deity+mantra+actions+festival banner+Bhadra/Panchak warnings)
+  - `PanchangScreen.js` — Today tab rewrite: hero (date+sunrise/sunset+main_line_hi), pancha-anga grid with end-times, Shubh Muhurat (Abhijit + Amrit Kalam), Ashubh Kaal (Rahu+Gulika+Yamagandam), today's festivals list, Bhadra/Panchak flag banner, expandable advanced section
+- **🐛 BUG FIX — DOCX Import was failing** with "Parsing failed. Check file format." on real-world Chalisa.docx (621 paragraphs, 6 MB). Root cause: Claude AI was timing out (>120s). Fix: built **deterministic `/app/backend/docx_parser.py`** that tags paragraphs by style+formatting (H1=collection, H2=item, H3=section, bold+devanagari=Sanskrit, italic=transliteration, plain=meaning) and walks tokens to build the items+verses tree. **3-second parse, no LLM dependency, handles any size.** Used as primary parser; Claude is now an optional fallback only when heuristic returns 0 items.
+- **iteration_15.json**: 18/18 backend pytest pass + Import Wizard end-to-end green (3 chalisas / 129 verses parsed in 2.75s on Chalisa.docx).
 
 ### Session 8: Mobile Navigation Overhaul + Intent-Based Bhakti (Feb 2026)
 - **Per-tab Stack architecture** in App.js — fixes "inner links don't work":
