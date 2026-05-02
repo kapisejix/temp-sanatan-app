@@ -4,7 +4,8 @@
 // ==============================================================
 
 // IMPORTANT: Replace with your deployed backend URL
-export const API_BASE_URL = 'https://integrated-platform-13.preview.emergentagent.com/api';
+//export const API_BASE_URL = 'https://integrated-platform-13.preview.emergentagent.com/api';
+export const API_BASE_URL = 'http://192.168.1.4:8001/api';
 
 // MSG91 Configuration (get from your MSG91 dashboard)
 export const MSG91_WIDGET_ID = 'YOUR_WIDGET_ID';

@@ -9,8 +9,8 @@ FROM node:20-bullseye-slim
 WORKDIR /app
 
 # Install yarn deps in a cached layer.
-COPY package.json yarn.lock ./
-RUN yarn install --frozen-lockfile --network-timeout 600000
+COPY package.json package-lock.json ./
+RUN npm install
 
 # App source is bind-mounted; copy as fallback.
 COPY . /app
@@ -23,4 +23,4 @@ ENV CHOKIDAR_USEPOLLING=true
 ENV WATCHPACK_POLLING=true
 ENV WDS_SOCKET_PORT=0
 
-CMD ["yarn", "start"]
+CMD ["npm", "start"]

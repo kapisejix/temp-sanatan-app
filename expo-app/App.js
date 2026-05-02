@@ -30,6 +30,7 @@ import GranthVersesScreen from './src/screens/v2/GranthVersesScreen';
 import VedasPuranasScreen from './src/screens/v2/VedasPuranasScreen';
 import VedaSuktasScreen from './src/screens/v2/VedaSuktasScreen';
 import PuranaDetailScreen from './src/screens/v2/PuranaDetailScreen';
+import AartiListScreen from './src/screens/v2/AartiListScreen';
 
 // Modal
 import AIChatScreen from './src/screens/v2/AIChatScreen';
@@ -89,6 +90,7 @@ function BhaktiStackNav() {
       <BhaktiStack.Screen name="VedasPuranas" component={VedasPuranasScreen} />
       <BhaktiStack.Screen name="VedaSuktas" component={VedaSuktasScreen} />
       <BhaktiStack.Screen name="PuranaDetail" component={PuranaDetailScreen} />
+      <BhaktiStack.Screen name="AartiList" component={AartiListScreen} />
     </BhaktiStack.Navigator>
   );
 }
@@ -159,7 +161,7 @@ function AuthStack() {
 }
 
 function RootGate() {
-  const { user, bootstrapping } = useAuth();
+  const { bootstrapping } = useAuth();
   if (bootstrapping) {
     return (
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.background }}>
@@ -168,7 +170,8 @@ function RootGate() {
       </View>
     );
   }
-  if (!user) return <AuthStack />;
+  // No auth gate — all content accessible without login.
+  // AIChat modal requires RootStack parent so FloatingAIButton can navigate to it.
   return (
     <RootStack.Navigator screenOptions={{ headerShown: false }}>
       <RootStack.Screen name="Tabs" component={MainTabs} />

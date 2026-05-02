@@ -3,8 +3,8 @@ import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   KeyboardAvoidingView, Platform, ScrollView, ActivityIndicator,
 } from 'react-native';
-import { COLORS } from '../config/api';
-import { useAuth } from '../contexts/AuthContext';
+import { COLORS } from '../../config/api';
+import { useAuth } from '../../contexts/AuthContext';
 
 export default function LoginScreen({ navigation }) {
   const { login } = useAuth();

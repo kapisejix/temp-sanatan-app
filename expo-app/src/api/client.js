@@ -121,6 +121,11 @@ export const api = {
   listVedaBooks: () => axios.get(`${API_BASE_URL}/vedas/books`).then(r => r.data),
   getVedaHierarchy: (bookId) => axios.get(`${API_BASE_URL}/vedas/hierarchy/${bookId}`).then(r => r.data),
   getVedaChapterVerses: (chapterId, lang = 'hi') => axios.get(`${API_BASE_URL}/vedas/chapter-verses/${chapterId}?lang=${lang}`).then(r => r.data),
+  // Bhakti item listing (public)
+  listBhaktiItems: (category, status = 'published') => {
+    const params = new URLSearchParams({ category, status });
+    return axios.get(`${API_BASE_URL}/bhakti/items?${params}`).then(r => r.data);
+  },
   // Audio sync (public)
   getItemAudio: (itemId) => axios.get(`${API_BASE_URL}/content/items/${itemId}/audio`).then(r => r.data),
   // Fetch full content item doc (for category detection)

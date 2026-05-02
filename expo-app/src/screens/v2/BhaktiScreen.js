@@ -1,11 +1,24 @@
-import React, { useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, TextInput, StyleSheet } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, ScrollView, TouchableOpacity, TextInput, StyleSheet, ActivityIndicator } from 'react-native';
 import { COLORS } from '../../config/api';
 import { DEITIES, DAILY_BHAKTI } from '../../data/mockData';
 import SafeScreen from '../../components/SafeScreen';
+import api from '../../api/client';
 
 export default function BhaktiScreen({ navigation }) {
   const [query, setQuery] = useState('');
+  const [aartiItems, setAartiItems] = useState([]);
+  const [aartiLoading, setAartiLoading] = useState(true);
+
+  useEffect(() => {
+    api.listBhaktiItems('aarti', 'published')
+      .then(data => {
+        const list = Array.isArray(data) ? data : (data.items || []);
+        setAartiItems(list.slice(0, 4)); // show first 4 as preview
+      })
+      .catch(() => {}) // silent fail — section just stays empty
+      .finally(() => setAartiLoading(false));
+  }, []);
 
   return (
     <SafeScreen>
@@ -42,6 +55,42 @@ export default function BhaktiScreen({ navigation }) {
             </TouchableOpacity>
           ))}
         </View>
+
+        {/* Live Aarti from backend */}
+        <View style={styles.sectionHeaderRow}>
+          <Text style={styles.sectionLabel}>🪔 आरती संग्रह</Text>
+          <TouchableOpacity onPress={() => navigation.navigate('AartiList')} testID="aarti-view-all">
+            <Text style={styles.viewAllText}>सभी देखें →</Text>
+          </TouchableOpacity>
+        </View>
+        {aartiLoading ? (
+          <ActivityIndicator color={COLORS.primary} style={{ marginBottom: 18 }} />
+        ) : aartiItems.length > 0 ? (
+          <View style={styles.aartiList}>
+            {aartiItems.map(item => (
+              <TouchableOpacity
+                key={item._id}
+                style={styles.aartiCard}
+                onPress={() => navigation.navigate('ContentDetail', { contentId: item._id })}
+                testID={`aarti-item-${item._id}`}
+              >
+                <Text style={styles.aartiIcon}>🪔</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.aartiTitle} numberOfLines={1}>{item.title_hi || item.title_en}</Text>
+                  {item.deity ? <Text style={styles.aartiDeity}>{item.deity}</Text> : null}
+                </View>
+                <Text style={styles.aartiArrow}>▶</Text>
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity
+              onPress={() => navigation.navigate('AartiList')}
+              style={styles.viewAllCard}
+              testID="aarti-view-all-card"
+            >
+              <Text style={styles.viewAllCardText}>सभी आरतियाँ देखें →</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
 
         {/* Daily Bhakti */}
         <Text style={styles.sectionLabel}>दैनिक भक्ति</Text>
@@ -129,4 +178,22 @@ const styles = StyleSheet.create({
   exploreIcon: { fontSize: 36 },
   exploreTitle: { fontSize: 16, fontWeight: '800', color: COLORS.text },
   exploreSub: { fontSize: 11, color: COLORS.textSecondary, marginTop: 2 },
+
+  sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, marginTop: 6 },
+  viewAllText: { fontSize: 12, fontWeight: '700', color: COLORS.primary },
+  aartiList: { marginBottom: 18, gap: 8 },
+  aartiCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: COLORS.surface, borderRadius: 10, padding: 12,
+    borderWidth: 1, borderColor: COLORS.border, borderLeftWidth: 3, borderLeftColor: COLORS.primary,
+  },
+  aartiIcon: { fontSize: 20 },
+  aartiTitle: { fontSize: 14, fontWeight: '700', color: COLORS.text },
+  aartiDeity: { fontSize: 10, color: COLORS.textSecondary, marginTop: 1 },
+  aartiArrow: { fontSize: 12, color: COLORS.primary, fontWeight: '700' },
+  viewAllCard: {
+    alignItems: 'center', paddingVertical: 10, borderRadius: 10,
+    borderWidth: 1, borderColor: COLORS.primary, borderStyle: 'dashed',
+  },
+  viewAllCardText: { fontSize: 13, fontWeight: '700', color: COLORS.primary },
 });
