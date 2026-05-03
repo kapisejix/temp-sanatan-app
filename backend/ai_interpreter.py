@@ -1,5 +1,5 @@
 """
-AI Hybrid Interpretation Layer — Claude (via Emergent LLM Key).
+AI Hybrid Interpretation Layer — Claude (via native Anthropic SDK).
 Strict prompt: ONLY explains structured rule output. Hindi primary. 2-4 lines. No hallucination.
 """
 import os
@@ -7,12 +7,6 @@ import logging
 import json
 
 logger = logging.getLogger(__name__)
-
-
-def _load_chat():
-    """Lazy import LlmChat to avoid hard dependency at server start."""
-    from emergentintegrations.llm.chat import LlmChat, UserMessage
-    return LlmChat, UserMessage
 
 
 SYSTEM_PROMPT_HI = """आप एक वैदिक ज्योतिष व्याख्याकार हैं। आपका कार्य केवल structured rule output को व्याख्या करना है।
@@ -39,24 +33,25 @@ Strict rules:
 6. No headings, no bullets, no jargon — just 2-4 lines."""
 
 
-async def interpret_with_ai(structured_data: dict, language: str = "hi", domain: str = "general") -> str:
+async def interpret_with_ai(
+    structured_data: dict,
+    language: str = "hi",
+    domain: str = "general",
+    api_key: str = "",
+) -> str:
     """
     Convert structured rule output → natural 2-4 line interpretation.
     domain: "dasha" | "dosha" | "graha" | "general"
     """
-    api_key = os.environ.get("EMERGENT_LLM_KEY", "")
-    if not api_key:
+    _key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+    if not _key:
         return ""
 
     try:
-        LlmChat, UserMessage = _load_chat()
-        chat = LlmChat(
-            api_key=api_key,
-            session_id=f"interpret-{domain}-{language}",
-            system_message=SYSTEM_PROMPT_HI if language == "hi" else SYSTEM_PROMPT_EN,
-        ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+        from anthropic import AsyncAnthropic
+        client = AsyncAnthropic(api_key=_key)
+        system = SYSTEM_PROMPT_HI if language == "hi" else SYSTEM_PROMPT_EN
 
-        # Compact JSON to avoid bloat
         data_str = json.dumps(structured_data, ensure_ascii=False, indent=None)
         if len(data_str) > 3000:
             data_str = data_str[:3000] + "..."
@@ -65,9 +60,13 @@ async def interpret_with_ai(structured_data: dict, language: str = "hi", domain:
         prompt_en = f"Explain this structured rule output in 2-4 lines of plain English:\n\n{data_str}"
         prompt = prompt_hi if language == "hi" else prompt_en
 
-        response = await chat.send_message(UserMessage(text=prompt))
-        text = (response or "").strip()
-        # Trim if too long
+        res = await client.messages.create(
+            model="claude-sonnet-4-5-20250929",
+            system=system,
+            max_tokens=512,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = (res.content[0].text or "").strip()
         if len(text) > 800:
             text = text[:800].rsplit(".", 1)[0] + "।"
         return text
@@ -76,7 +75,12 @@ async def interpret_with_ai(structured_data: dict, language: str = "hi", domain:
         return ""
 
 
-async def interpret_dasha(dasha_interpretation: dict, current_dasha: dict, language: str = "hi") -> str:
+async def interpret_dasha(
+    dasha_interpretation: dict,
+    current_dasha: dict,
+    language: str = "hi",
+    api_key: str = "",
+) -> str:
     """Generate AI insight for Dasha (3 short insights)."""
     payload = {
         "current_period": {
@@ -87,10 +91,15 @@ async def interpret_dasha(dasha_interpretation: dict, current_dasha: dict, langu
         "domain_impacts": {k: v["severity"] for k, v in dasha_interpretation["domain_impacts"].items()},
         "themes": dasha_interpretation["themes_hi" if language == "hi" else "themes_en"],
     }
-    return await interpret_with_ai(payload, language=language, domain="dasha")
+    return await interpret_with_ai(payload, language=language, domain="dasha", api_key=api_key)
 
 
-async def interpret_dosha(dosha: dict, dosha_type: str, language: str = "hi") -> str:
+async def interpret_dosha(
+    dosha: dict,
+    dosha_type: str,
+    language: str = "hi",
+    api_key: str = "",
+) -> str:
     """Generate AI explanation for a single dosha."""
     payload = {
         "dosha_type": dosha_type,
@@ -98,4 +107,4 @@ async def interpret_dosha(dosha: dict, dosha_type: str, language: str = "hi") ->
         "severity": dosha.get("severity"),
         "rule_explanation": dosha.get("explanation_hi" if language == "hi" else "explanation_en"),
     }
-    return await interpret_with_ai(payload, language=language, domain="dosha")
+    return await interpret_with_ai(payload, language=language, domain="dosha", api_key=api_key)

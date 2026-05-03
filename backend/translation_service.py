@@ -1,7 +1,7 @@
 """
 Gemini-powered translation service for Sanatan Saathi multilingual content.
 
-Uses emergentintegrations.LlmChat with EMERGENT_LLM_KEY (universal key).
+Uses google-generativeai (native SDK) with GEMINI_API_KEY or gemini_api_key integration setting.
 Default model: gemini-2.5-flash (fast, cost-effective for translation).
 
 Returns structured JSON translations. AI output is always treated as DRAFT —
@@ -33,13 +33,12 @@ LANGUAGE_NAMES = {
 }
 
 DEFAULT_MODEL = "gemini-2.5-flash"
-DEFAULT_PROVIDER = "gemini"
 
 
-def _get_api_key() -> str:
-    key = os.environ.get("EMERGENT_LLM_KEY")
+def _get_api_key(api_key: str = None) -> str:
+    key = api_key or os.environ.get("GEMINI_API_KEY", "")
     if not key:
-        raise RuntimeError("EMERGENT_LLM_KEY is not configured in backend/.env")
+        raise RuntimeError("GEMINI_API_KEY or gemini_api_key integration setting not configured")
     return key
 
 
@@ -52,15 +51,12 @@ def _strip_code_fences(text: str) -> str:
     return text.strip()
 
 
-def _build_chat(session_id: str, system_message: str, model: str = DEFAULT_MODEL):
-    """Lazy import so server boot doesn't fail if package missing in dev."""
-    from emergentintegrations.llm.chat import LlmChat, UserMessage
-    chat = LlmChat(
-        api_key=_get_api_key(),
-        session_id=session_id,
-        system_message=system_message,
-    ).with_model(DEFAULT_PROVIDER, model)
-    return chat, UserMessage
+async def _gemini_generate(api_key: str, system_message: str, prompt: str, model: str) -> str:
+    import google.generativeai as genai
+    genai.configure(api_key=api_key)
+    _model = genai.GenerativeModel(model_name=model, system_instruction=system_message)
+    result = await _model.generate_content_async(prompt)
+    return result.text
 
 
 SYSTEM_PROMPT = """You are an expert translator specializing in Hindu spiritual and devotional texts.
@@ -82,6 +78,7 @@ async def translate_text(
     target_languages: List[str],
     model: str = DEFAULT_MODEL,
     context_label: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> Dict[str, str]:
     """Translate a single text into multiple target languages.
 
@@ -107,22 +104,18 @@ async def translate_text(
         f"No code fences, no extra commentary."
     )
 
-    session_id = f"translate-{uuid.uuid4().hex[:12]}"
-    chat, UserMessage = _build_chat(session_id, SYSTEM_PROMPT, model)
-    raw = await chat.send_message(UserMessage(text=prompt))
+    raw = await _gemini_generate(_get_api_key(api_key), SYSTEM_PROMPT, prompt, model)
     cleaned = _strip_code_fences(raw)
 
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError:
-        # Try to find first JSON object in response
         m = re.search(r"\{[\s\S]*\}", cleaned)
         if not m:
             logger.error(f"Gemini returned non-JSON: {cleaned[:300]}")
             raise RuntimeError("Gemini did not return valid JSON")
         data = json.loads(m.group(0))
 
-    # Ensure all values are strings
     return {k: (v if isinstance(v, str) else json.dumps(v, ensure_ascii=False))
             for k, v in data.items() if k in target_languages}
 
@@ -135,6 +128,7 @@ async def translate_verse(
     transliteration: Optional[str] = None,
     meaning: Optional[str] = None,
     model: str = DEFAULT_MODEL,
+    api_key: Optional[str] = None,
 ) -> Dict[str, Dict[str, str]]:
     """Translate a verse's text/transliteration/meaning together for context coherence.
 
@@ -189,9 +183,7 @@ async def translate_verse(
         f"No markdown, no code fences, no commentary."
     )
 
-    session_id = f"translate-verse-{uuid.uuid4().hex[:12]}"
-    chat, UserMessage = _build_chat(session_id, SYSTEM_PROMPT, model)
-    raw = await chat.send_message(UserMessage(text=prompt))
+    raw = await _gemini_generate(_get_api_key(api_key), SYSTEM_PROMPT, prompt, model)
     cleaned = _strip_code_fences(raw)
 
     try:

@@ -17,11 +17,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app/backend
 
 # Install Python deps in a separate layer for cache efficiency.
-# emergentintegrations is hosted on a private CloudFront index.
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r /tmp/requirements.txt \
-        --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/
+    pip install --no-cache-dir -r /tmp/requirements.txt
 
 # App source is bind-mounted in docker-compose at /app/backend. Copy as
 # fallback so the image still runs without a volume.

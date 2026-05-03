@@ -469,11 +469,7 @@ async def analyze_birth_chart(request: Request):
         raise HTTPException(status_code=429, detail="Daily limit reached. Download the app for unlimited access.")
 
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        chat = LlmChat(
-            api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
-            session_id=f"chart-{uuid.uuid4()}",
-            system_message="""You are an expert Vedic astrologer (Jyotish Shastra). Based on the user's birth details, provide a comprehensive analysis.
+        _chart_system = """You are an expert Vedic astrologer (Jyotish Shastra). Based on the user's birth details, provide a comprehensive analysis.
 
 You MUST respond in this exact JSON format:
 {
@@ -493,9 +489,6 @@ You MUST respond in this exact JSON format:
 }
 
 If birth time is not provided, give analysis based on date and place only. Be specific with mantras in Sanskrit with transliteration."""
-        )
-        chat.with_model("anthropic", "claude-sonnet-4-5-20250929")
-
         prompt = f"""Analyze the birth chart for:
 - Name: {name}
 - Date of Birth: {dob}
@@ -503,8 +496,7 @@ If birth time is not provided, give analysis based on date and place only. Be sp
 - Birth Place: {birth_place or 'Not provided'}
 
 Provide complete Vedic astrology analysis with Nakshatra, Rashi, Grah Dosh, daily mantras, remedies, recommended pujas, gemstone, and lucky details. Respond ONLY in the JSON format specified."""
-
-        ai_response = await chat.send_message(UserMessage(text=prompt))
+        ai_response = await _call_anthropic(_chart_system, prompt)
 
         # Parse JSON
         import json
@@ -742,10 +734,16 @@ async def update_item_status(item_id: str, request: Request, admin: dict = Depen
             langs_missing_media = []
             for lang in supported:
                 bucket = languages.get(lang) or {}
-                if not ((bucket.get("video") or {}).get("url") or (bucket.get("thumbnail") or {}).get("url")):
+                has_video = bool((bucket.get("video") or {}).get("url"))
+                has_thumb = bool((bucket.get("thumbnail") or {}).get("url"))
+                has_audio = bool(bucket.get("audio_versions"))
+                has_text  = bool(bucket.get("full_text"))
+                if not (has_video or has_thumb or has_audio or has_text):
+                    continue  # empty language bucket — skip, don't block publish
+                if not (has_video or has_thumb or has_audio):
                     langs_missing_media.append(lang)
             if langs_missing_media:
-                missing.append(f"video OR thumbnail for [{', '.join(langs_missing_media)}]")
+                missing.append(f"media (audio/video/thumbnail) for [{', '.join(langs_missing_media)}]")
         else:
             verse_count = await db[vcoll].count_documents({"item_id": item_id})
             if verse_count < 1:
@@ -784,13 +782,17 @@ async def publish_check(item_id: str, admin: dict = Depends(require_role(["super
             bucket = languages.get(lang) or {}
             has_video = bool((bucket.get("video") or {}).get("url"))
             has_thumb = bool((bucket.get("thumbnail") or {}).get("url"))
-            if not (has_video or has_thumb):
+            has_audio = bool(bucket.get("audio_versions"))
+            has_text  = bool(bucket.get("full_text"))
+            if not (has_video or has_thumb or has_audio or has_text):
+                continue  # empty bucket — skip
+            if not (has_video or has_thumb or has_audio):
                 missing_media.append(lang)
         checks.append({
             "key": "aarti_media",
-            "label": "Each language has a video OR thumbnail",
+            "label": "Each language has audio, video, or thumbnail",
             "ok": len(missing_media) == 0,
-            "detail": f"missing: {', '.join(missing_media)}" if missing_media else "all languages covered",
+            "detail": f"missing media: {', '.join(missing_media)}" if missing_media else "all languages covered",
         })
         # Audio-without-sync warning (warn, allow publish) — marked optional
         audio_without_sync = []
@@ -988,14 +990,14 @@ async def list_bhakti_items(
     if status:
         query["status"] = status
     
-    # Check bhakti_items collection first, then fallback to content_items
-    items = await db.bhakti_items.find(query).sort("sort_order", 1).skip(skip).limit(limit).to_list(limit)
-    total = await db.bhakti_items.count_documents(query)
-    
-    # If no items in bhakti_items, check content_items with same category filter
-    if not items and category in BHAKTI_CATEGORIES:
-        items = await db.content_items.find(query).sort("sort_order", 1).skip(skip).limit(limit).to_list(limit)
-        total = await db.content_items.count_documents(query)
+    # Always merge both collections so items created via either admin path appear
+    items_b = await db.bhakti_items.find(query).sort("sort_order", 1).to_list(1000)
+    items_c = await db.content_items.find(query).sort("sort_order", 1).to_list(1000)
+    seen = {str(i["_id"]) for i in items_b}
+    combined = items_b + [i for i in items_c if str(i["_id"]) not in seen]
+    combined.sort(key=lambda x: (x.get("sort_order") or 999, str(x.get("created_at") or "")))
+    total = len(combined)
+    items = combined[skip: skip + limit]
     
     return {
         "items": [serialize_doc(i) for i in items],
@@ -1078,7 +1080,17 @@ async def create_bhakti_item(request: Request, admin: dict = Depends(require_rol
         "created_at": datetime.now(timezone.utc).isoformat(),
         "updated_at": datetime.now(timezone.utc).isoformat()
     }
-    
+
+    # Initialise per-language buckets so that audio/video/sync uploads work
+    # immediately and full_text typed in Quick Create is surfaced by the mobile
+    # media endpoint without requiring the drawer's Full Text tab first.
+    flat_text = body.get("full_text", "")
+    supported = body.get("supported_languages", ["hi", "en", "sa"])
+    doc["languages"] = {
+        code: {"full_text": flat_text if code == "hi" else ""}
+        for code in supported
+    }
+
     result = await db.bhakti_items.insert_one(doc)
     item_id = str(result.inserted_id)
     doc["_id"] = item_id
@@ -1152,7 +1164,27 @@ async def update_bhakti_status(item_id: str, request: Request, admin: dict = Dep
     if new_status not in ["draft", "published", "archived"]:
         raise HTTPException(status_code=400, detail="Invalid status")
 
-    _item, item_coll, _vcoll = await _resolve_item_collections(item_id)
+    item_doc, item_coll, _vcoll = await _resolve_item_collections(item_id)
+
+    # Aarti publish gate: must have at least some content before going live.
+    if new_status == "published" and item_doc and (item_doc.get("category") or "").lower() == "aarti":
+        languages = item_doc.get("languages") or {}
+        supported = item_doc.get("supported_languages") or []
+        has_content = bool(item_doc.get("full_text")) or any(
+            bool(
+                (languages.get(lg) or {}).get("full_text") or
+                (languages.get(lg) or {}).get("audio_versions") or
+                ((languages.get(lg) or {}).get("video") or {}).get("url") or
+                ((languages.get(lg) or {}).get("thumbnail") or {}).get("url")
+            )
+            for lg in supported
+        )
+        if not has_content:
+            raise HTTPException(
+                status_code=422,
+                detail="Cannot publish — add full text, audio, video, or thumbnail first"
+            )
+
     await db[item_coll].update_one(
         {"_id": ObjectId(item_id)},
         {"$set": {"status": new_status, "updated_at": datetime.now(timezone.utc).isoformat()}}
@@ -1366,11 +1398,7 @@ async def vedas_upload_parse(
         raise HTTPException(status_code=400, detail="Could not extract text from file")
 
     # Parse with Claude
-    from emergentintegrations.llm.chat import LlmChat, UserMessage
-    chat = LlmChat(
-        api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
-        session_id=f"vedas-parse-{uuid.uuid4()}",
-        system_message="""You are an expert in Hindu scriptures. Parse the uploaded text into structured chapter/verse format.
+    _vedas_parse_system = """You are an expert in Hindu scriptures. Parse the uploaded text into structured chapter/verse format.
 
 Extract:
 - Chapter/Mandala divisions (identify by headings, numbering, or contextual clues)
@@ -1395,9 +1423,7 @@ Return ONLY valid JSON:
     }]
   }]
 }"""
-    )
-    chat.with_model("anthropic", "claude-sonnet-4-5-20250929")
-    ai_resp = await chat.send_message(UserMessage(text=f"Parse this scripture text:\n\n{raw_text[:50000]}"))
+    ai_resp = await _call_anthropic_parsing(_vedas_parse_system, f"Parse this scripture text:\n\n{raw_text[:50000]}")
 
     import json as json_mod
     json_str = ai_resp
@@ -1614,7 +1640,7 @@ async def vedachat_message(request: Request):
 
     # Call Claude with DB context
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        from anthropic import AsyncAnthropic
 
         session_id = conversation_id or str(uuid.uuid4())
         system_msg = f"""You are VedaChat, a knowledgeable spiritual guide for Sanatan Dharma. You answer questions about Hindu scriptures, philosophy, rituals, and spiritual practices.
@@ -1631,20 +1657,27 @@ IMPORTANT RULES:
 
 {scripture_context}"""
 
-        chat = LlmChat(
-            api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
-            session_id=f"vedachat-{session_id}",
-            system_message=system_msg
-        )
-        chat.with_model("anthropic", "claude-sonnet-4-5-20250929")
+        _vc_api_key = await get_setting("anthropic_api_key")
+        if not _vc_api_key:
+            raise RuntimeError("anthropic_api_key not configured in Integration Settings")
+        _vc_model = await get_setting("ai_model_chat") or "claude-sonnet-4-5-20250929"
+        _vc_client = AsyncAnthropic(api_key=_vc_api_key)
 
-        # Load last few messages for context (not full history to save tokens)
+        # Build conversation history for Anthropic (alternating user/assistant)
         recent_msgs = messages[-6:-1] if len(messages) > 6 else messages[:-1]
+        _vc_history = []
         for msg in recent_msgs:
-            if msg["role"] == "user":
-                await chat.send_message(UserMessage(text=msg["content"]))
+            if msg["role"] in ("user", "assistant"):
+                _vc_history.append({"role": msg["role"], "content": msg["content"]})
+        _vc_history.append({"role": "user", "content": message_text})
 
-        ai_response = await chat.send_message(UserMessage(text=message_text))
+        _vc_res = await _vc_client.messages.create(
+            model=_vc_model,
+            system=system_msg,
+            max_tokens=4096,
+            messages=_vc_history,
+        )
+        ai_response = _vc_res.content[0].text
 
         # Extract references from the AI response and DB results
         extracted_refs = []
@@ -1759,11 +1792,7 @@ async def vedachat_upload_knowledge(
         raise HTTPException(status_code=400, detail="Could not extract text from file")
 
     # Parse with Claude to extract structured knowledge
-    from emergentintegrations.llm.chat import LlmChat, UserMessage
-    chat = LlmChat(
-        api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
-        session_id=f"knowledge-{uuid.uuid4()}",
-        system_message="""You are a Hindu scripture parser. Extract structured knowledge from this text.
+    _kb_system = """You are a Hindu scripture parser. Extract structured knowledge from this text.
 Extract: Book/Source name, Chapters, Shlokas/Verses with:
 - Original Sanskrit/Hindi text
 - Transliteration
@@ -1788,9 +1817,7 @@ Return ONLY valid JSON:
 }
 
 CRITICAL: Preserve ALL text. No truncation. No "..." placeholders."""
-    )
-    chat.with_model("anthropic", "claude-sonnet-4-5-20250929")
-    ai_resp = await chat.send_message(UserMessage(text=f"Parse:\n\n{raw_text[:50000]}"))
+    ai_resp = await _call_anthropic_parsing(_kb_system, f"Parse:\n\n{raw_text[:50000]}")
 
     import json as json_mod
     json_str = ai_resp
@@ -2236,12 +2263,7 @@ async def upload_docx(file: UploadFile = File(...), category: str = Form("chalis
                 raw_text += f"{text}\n"
 
         # Parse with Claude AI - Enhanced prompt for content integrity
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-
-        chat = LlmChat(
-            api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
-            session_id=f"docx-parse-{upload_id}",
-            system_message="""You are a Hindu scripture content parser. Parse the uploaded text into structured JSON.
+        _docx_system = """You are a Hindu scripture content parser. Parse the uploaded text into structured JSON.
 
 Rules:
 - [H1] = Category name
@@ -2276,10 +2298,7 @@ Return ONLY valid JSON array:
     "meaning_en": "English meaning if available"
   }]
 }]"""
-        )
-        chat.with_model("anthropic", "claude-sonnet-4-5-20250929")
-
-        ai_response = await chat.send_message(UserMessage(text=f"Parse this scripture content for category '{category}':\n\n{raw_text}"))
+        ai_response = await _call_anthropic_parsing(_docx_system, f"Parse this scripture content for category '{category}':\n\n{raw_text}")
 
         # Extract JSON from response
         import json
@@ -2411,11 +2430,15 @@ async def generate_tts(request: Request, admin: dict = Depends(require_role(["su
         raise HTTPException(status_code=400, detail="Text too long (max 4096 chars)")
 
     try:
-        from emergentintegrations.llm.openai import OpenAITextToSpeech
+        from openai import AsyncOpenAI as _OAI
         import base64
 
-        tts = OpenAITextToSpeech(api_key=os.environ.get("EMERGENT_LLM_KEY", ""))
-        audio_bytes = await tts.generate_speech(text=text, model=model, voice=voice, response_format="mp3")
+        _oai_tts_key = await get_setting("openai_api_key")
+        if not _oai_tts_key:
+            raise RuntimeError("openai_api_key not configured in Integration Settings")
+        _oai_tts_client = _OAI(api_key=_oai_tts_key)
+        _tts_resp = await _oai_tts_client.audio.speech.create(model=model, voice=voice, input=text, response_format="mp3")
+        audio_bytes = _tts_resp.content
 
         audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
 
@@ -2455,10 +2478,13 @@ async def batch_generate_tts(item_id: str, request: Request, admin: dict = Depen
         raise HTTPException(status_code=404, detail="No verses found")
 
     try:
-        from emergentintegrations.llm.openai import OpenAITextToSpeech
+        from openai import AsyncOpenAI as _OAI
         import base64
 
-        tts = OpenAITextToSpeech(api_key=os.environ.get("EMERGENT_LLM_KEY", ""))
+        _oai_bulk_key = await get_setting("openai_api_key")
+        if not _oai_bulk_key:
+            raise RuntimeError("openai_api_key not configured in Integration Settings")
+        _oai_bulk_client = _OAI(api_key=_oai_bulk_key)
         generated = 0
         errors = []
 
@@ -2471,7 +2497,8 @@ async def batch_generate_tts(item_id: str, request: Request, admin: dict = Depen
                 continue
 
             try:
-                audio_bytes = await tts.generate_speech(text=text[:4096], model=model, voice=voice, response_format="mp3")
+                _bulk_tts_resp = await _oai_bulk_client.audio.speech.create(model=model, voice=voice, input=text[:4096], response_format="mp3")
+                audio_bytes = _bulk_tts_resp.content
                 audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
 
                 await db.content_verses.update_one(
@@ -2792,11 +2819,7 @@ async def upload_pdf(file: UploadFile = File(...), book_type: str = Form("veda")
         if not raw_text.strip():
             raise HTTPException(status_code=400, detail="No text found in PDF")
 
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        chat = LlmChat(
-            api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
-            session_id=f"pdf-parse-{upload_id}",
-            system_message="""You are a Vedic scripture parser. Extract structured content from PDF text.
+        _pdf_system = """You are a Vedic scripture parser. Extract structured content from PDF text.
 Return ONLY valid JSON:
 {
   "book_title_hi": "ऋग्वेद",
@@ -2815,9 +2838,7 @@ Return ONLY valid JSON:
     }]
   }]
 }"""
-        )
-        chat.with_model("anthropic", "claude-sonnet-4-5-20250929")
-        ai_response = await chat.send_message(UserMessage(text=f"Parse this Vedic/Puranic PDF text into structured chapters and verses:\n\n{raw_text[:15000]}"))
+        ai_response = await _call_anthropic_parsing(_pdf_system, f"Parse this Vedic/Puranic PDF text into structured chapters and verses:\n\n{raw_text[:15000]}")
 
         json_str = ai_response
         if "```json" in json_str:
@@ -2879,11 +2900,7 @@ async def import_panchang_pdf(file: UploadFile = File(...), admin: dict = Depend
                 if text:
                     raw_text += text + "\n"
 
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        chat = LlmChat(
-            api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
-            session_id=f"panchang-import-{uuid.uuid4()}",
-            system_message="""Extract Hindu Panchang calendar data from this PDF. Return ONLY valid JSON array:
+        _panchang_system = """Extract Hindu Panchang calendar data from this PDF. Return ONLY valid JSON array:
 [{
   "date": "YYYY-MM-DD",
   "tithi": "तिथि name in Hindi",
@@ -2901,9 +2918,7 @@ async def import_panchang_pdf(file: UploadFile = File(...), admin: dict = Depend
   "is_bhadra": false
 }]
 Extract as many dates as possible from the PDF."""
-        )
-        chat.with_model("anthropic", "claude-sonnet-4-5-20250929")
-        ai_response = await chat.send_message(UserMessage(text=f"Extract panchang data:\n\n{raw_text[:15000]}"))
+        ai_response = await _call_anthropic_parsing(_panchang_system, f"Extract panchang data:\n\n{raw_text[:15000]}")
 
         json_str = ai_response
         if "```json" in json_str:
@@ -2966,17 +2981,24 @@ async def generate_shloka_image(request: Request, admin: dict = Depends(require_
 
     try:
         import base64
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        import google.genai as _ggenai
+        from google.genai import types as _gtypes
 
-        chat = LlmChat(
-            api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
-            session_id=f"img-gen-{uuid.uuid4()}",
-            system_message="You are an AI image generator creating beautiful Hindu spiritual art."
+        _gimg_key = await get_setting("gemini_api_key")
+        if not _gimg_key:
+            raise HTTPException(status_code=503, detail="gemini_api_key not configured in Integration Settings")
+        _gclient = _ggenai.Client(api_key=_gimg_key)
+        _gresp = await _gclient.aio.models.generate_content(
+            model="gemini-2.0-flash-preview-image-generation",
+            contents=full_prompt,
+            config=_gtypes.GenerateContentConfig(response_modalities=["IMAGE", "TEXT"]),
         )
-        chat.with_model("gemini", "gemini-3.1-flash-image-preview").with_params(modalities=["image", "text"])
-
-        msg = UserMessage(text=full_prompt)
-        text_resp, images = await chat.send_message_multimodal_response(msg)
+        images, text_resp = [], ""
+        for _part in _gresp.candidates[0].content.parts:
+            if hasattr(_part, "text") and _part.text:
+                text_resp = _part.text
+            elif hasattr(_part, "inline_data") and _part.inline_data:
+                images.append({"data": base64.b64encode(_part.inline_data.data).decode(), "mime_type": _part.inline_data.mime_type})
 
         if images and len(images) > 0:
             return {
@@ -3008,47 +3030,12 @@ async def generate_video(request: Request, admin: dict = Depends(require_role(["
     if duration not in [4, 8, 12]:
         raise HTTPException(status_code=400, detail="Duration must be 4, 8, or 12")
 
-    try:
-        import asyncio, base64
-        from emergentintegrations.llm.openai.video_generation import OpenAIVideoGeneration
-
-        video_gen = OpenAIVideoGeneration(api_key=os.environ.get("EMERGENT_LLM_KEY", ""))
-
-        # Run sync video generation in thread executor
-        loop = asyncio.get_event_loop()
-        video_bytes = await loop.run_in_executor(
-            None,
-            lambda: video_gen.text_to_video(prompt=prompt, model=model, size=size, duration=duration, max_wait_time=600)
-        )
-
-        if video_bytes:
-            video_base64 = base64.b64encode(video_bytes).decode("utf-8")
-
-            # Save to user videos collection
-            video_doc = {
-                "user_id": admin["_id"],
-                "prompt": prompt,
-                "model": model,
-                "size": size,
-                "duration": duration,
-                "video_base64_preview": video_base64[:100],
-                "created_at": datetime.now(timezone.utc).isoformat()
-            }
-            await db.user_videos.insert_one(video_doc)
-
-            return {
-                "video_base64": video_base64,
-                "format": "mp4",
-                "prompt": prompt,
-                "size": size,
-                "duration": duration,
-                "model": model
-            }
-        else:
-            raise HTTPException(status_code=500, detail="Video generation returned no data")
-    except Exception as e:
-        logger.error(f"Video generation error: {e}")
-        raise HTTPException(status_code=500, detail=f"Video generation failed: {str(e)}")
+    # OpenAI Sora video generation does not yet have a stable public API.
+    # Configure openai_api_key in Integration Settings when Sora public API becomes available.
+    _vid_oai_key = await get_setting("openai_api_key")
+    if not _vid_oai_key:
+        raise HTTPException(status_code=503, detail="openai_api_key not configured in Integration Settings")
+    raise HTTPException(status_code=501, detail="Video generation (Sora) requires OpenAI video API access. Set openai_api_key and retry once the Sora public API is available.")
 
 # ===================== NAKSHATRA & UPAYA (Personalized Spiritual) =====================
 
@@ -3136,11 +3123,7 @@ async def get_personalized_upaya(request: Request):
         raise HTTPException(status_code=404, detail="Nakshatra profile not set. Please set your birth details first.")
 
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        chat = LlmChat(
-            api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
-            session_id=f"upaya-{uuid.uuid4()}",
-            system_message="""You are a Vedic astrology expert. Provide personalized spiritual remedies (Upaya) based on the user's Nakshatra and birth details.
+        _upaya_system = """You are a Vedic astrology expert. Provide personalized spiritual remedies (Upaya) based on the user's Nakshatra and birth details.
 
 Include in your response:
 1. Graha Shanti (planetary remedy) - specific mantras and puja
@@ -3152,10 +3135,7 @@ Include in your response:
 7. Any specific puja vidhi for their concern
 
 Respond in both Hindi and English. Be specific with mantra texts in Sanskrit."""
-        )
-        chat.with_model("anthropic", "claude-sonnet-4-5-20250929")
-
-        prompt = f"""Generate personalized Upaya (spiritual remedies) for:
+        _upaya_prompt = f"""Generate personalized Upaya (spiritual remedies) for:
 - Nakshatra: {profile['nakshatra_name_en']} ({profile['nakshatra_name_hi']})
 - Ruling Planet (Graha): {profile['ruling_graha']}
 - Nakshatra Deity: {profile['nakshatra_deity']}
@@ -3163,8 +3143,7 @@ Respond in both Hindi and English. Be specific with mantra texts in Sanskrit."""
 - Concern: {concern}
 
 Provide detailed, practical Vedic remedies."""
-
-        ai_response = await chat.send_message(UserMessage(text=prompt))
+        ai_response = await _call_anthropic(_upaya_system, _upaya_prompt)
 
         # Save upaya to history
         upaya_doc = {
@@ -3230,11 +3209,11 @@ async def get_nakshatra_content(nakshatra_num: int):
 
 INTEGRATION_CATEGORIES = {
     "ai_llm": {"label": "AI / LLM", "icon": "brain", "fields": [
-        {"key": "emergent_llm_key", "label": "Emergent LLM Key (Universal)", "type": "secret", "description": "Universal key for Claude, OpenAI, Gemini via Emergent"},
-        {"key": "openai_api_key", "label": "OpenAI API Key", "type": "secret", "description": "Direct OpenAI key (if not using Emergent)"},
-        {"key": "anthropic_api_key", "label": "Anthropic API Key", "type": "secret", "description": "Direct Claude key (if not using Emergent)"},
-        {"key": "ai_model_chat", "label": "Chat Model", "type": "text", "description": "Model for VedaChat (e.g., claude-sonnet-4-5-20250929)"},
-        {"key": "ai_model_parsing", "label": "Parsing Model", "type": "text", "description": "Model for DOCX/PDF parsing"},
+        {"key": "gemini_api_key",    "label": "Gemini API Key",    "type": "secret", "description": "Google Gemini key (for translation and image generation)"},
+        {"key": "openai_api_key",    "label": "OpenAI API Key",    "type": "secret", "description": "Direct OpenAI key (for TTS)"},
+        {"key": "anthropic_api_key", "label": "Anthropic API Key", "type": "secret", "description": "Direct Claude / Anthropic key"},
+        {"key": "ai_model_chat",     "label": "Chat Model",        "type": "text",   "description": "Model for VedaChat (e.g., claude-sonnet-4-5-20250929)"},
+        {"key": "ai_model_parsing",  "label": "Parsing Model",     "type": "text",   "description": "Model for DOCX/PDF parsing"},
     ]},
     "tts_audio": {"label": "Text-to-Speech", "icon": "headphones", "fields": [
         {"key": "tts_provider", "label": "TTS Provider", "type": "select", "options": ["google", "openai", "elevenlabs"], "description": "Which TTS provider to use (switchable)"},
@@ -3345,12 +3324,45 @@ async def delete_integration(key: str, admin: dict = Depends(require_role(["supe
     await db.integration_settings.delete_one({"key": key})
     return {"message": f"Deleted {key}"}
 
-# Helper to get integration setting
+# Helper to get integration setting (with decryption for secrets)
 async def get_setting(key: str, default: str = "") -> str:
     doc = await db.integration_settings.find_one({"key": key})
     if doc and doc.get("value"):
-        return doc["value"]
+        val = doc["value"]
+        if doc.get("encrypted"):
+            val = decrypt_value(val)
+        return val
     return os.environ.get(key.upper(), default)
+
+async def _call_anthropic(system_message: str, user_prompt: str, model: str = None) -> str:
+    from anthropic import AsyncAnthropic
+    api_key = await get_setting("anthropic_api_key")
+    if not api_key:
+        raise RuntimeError("anthropic_api_key not configured in Integration Settings")
+    _model = model or await get_setting("ai_model_chat") or "claude-sonnet-4-5-20250929"
+    client = AsyncAnthropic(api_key=api_key)
+    res = await client.messages.create(
+        model=_model,
+        system=system_message,
+        max_tokens=4096,
+        messages=[{"role": "user", "content": user_prompt}],
+    )
+    return res.content[0].text
+
+async def _call_anthropic_parsing(system_message: str, user_prompt: str) -> str:
+    from anthropic import AsyncAnthropic
+    api_key = await get_setting("anthropic_api_key")
+    if not api_key:
+        raise RuntimeError("anthropic_api_key not configured in Integration Settings")
+    _model = await get_setting("ai_model_parsing") or "claude-sonnet-4-5-20250929"
+    client = AsyncAnthropic(api_key=api_key)
+    res = await client.messages.create(
+        model=_model,
+        system=system_message,
+        max_tokens=4096,
+        messages=[{"role": "user", "content": user_prompt}],
+    )
+    return res.content[0].text
 
 # ===================== ANALYTICS & TRACKING =====================
 
@@ -3750,14 +3762,8 @@ async def public_vedachat(request: Request):
         return {"limited": True, "message": "You've used all 5 free questions! Download the Sanatan Saathi app for unlimited access to VedaChat.", "remaining": 0}
 
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        chat = LlmChat(
-            api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
-            session_id=f"public-{identifier}",
-            system_message="""You are VedaChat, a knowledgeable spiritual guide for Sanatan Dharma. Answer questions about Hindu scriptures, philosophy, rituals, and spiritual practices. Always cite scripture references. Keep answers concise (2-3 paragraphs max) for the web widget."""
-        )
-        chat.with_model("anthropic", "claude-sonnet-4-5-20250929")
-        ai_response = await chat.send_message(UserMessage(text=question))
+        _public_vc_system = """You are VedaChat, a knowledgeable spiritual guide for Sanatan Dharma. Answer questions about Hindu scriptures, philosophy, rituals, and spiritual practices. Always cite scripture references. Keep answers concise (2-3 paragraphs max) for the web widget."""
+        ai_response = await _call_anthropic(_public_vc_system, question)
 
         # Update limit
         await db.public_chat_limits.update_one(
@@ -4222,11 +4228,7 @@ async def import_wizard(
                     else:
                         raw_text += f"{text}\n"
 
-                from emergentintegrations.llm.chat import LlmChat, UserMessage
-                chat = LlmChat(
-                    api_key=os.environ.get("EMERGENT_LLM_KEY", ""),
-                    session_id=f"import-{upload_id}",
-                    system_message=f"""You are a Hindu scripture content parser. Parse the uploaded text into structured JSON.
+                _import_system = f"""You are a Hindu scripture content parser. Parse the uploaded text into structured JSON.
 Rules:
 - [H1] = Category name
 - [H2] = Item title
@@ -4244,10 +4246,8 @@ Return ONLY valid JSON array:
     "sanskrit_text": "full text with \\n for line breaks",
     "transliteration": "roman text",
     "meaning": "meaning in {language}"}}]
-}}]""",
-                )
-                chat.with_model("anthropic", "claude-sonnet-4-5-20250929")
-                ai_resp = await chat.send_message(UserMessage(text=f"Parse for category '{category}', language '{language}':\n\n{raw_text}"))
+}}]"""
+                ai_resp = await _call_anthropic_parsing(_import_system, f"Parse for category '{category}', language '{language}':\n\n{raw_text}")
                 json_str = ai_resp
                 if "```json" in json_str:
                     json_str = json_str.split("```json")[1].split("```")[0]
@@ -5135,7 +5135,8 @@ async def api_dasha_interpret_ai(request: Request, admin: dict = Depends(get_cur
     if cached_ai:
         return {"interpretation": interp, "ai_explanation": cached_ai, "language": language, "cached": True}
 
-    ai_text = await interpret_dasha(interp, kundli["current_dasha"], language=language)
+    _akey_dasha = await get_setting("anthropic_api_key")
+    ai_text = await interpret_dasha(interp, kundli["current_dasha"], language=language, api_key=_akey_dasha)
 
     # Save to cache
     ai_cache = kundli.get("ai_cache", {}) or {}
@@ -5181,7 +5182,8 @@ async def api_dosha_interpret_ai(request: Request, admin: dict = Depends(get_cur
     if cached_ai:
         return {"dosha": dosha, "ai_explanation": cached_ai, "cached": True}
 
-    ai_text = await interpret_dosha(dosha, dosha_type, language=language)
+    _akey_dosha = await get_setting("anthropic_api_key")
+    ai_text = await interpret_dosha(dosha, dosha_type, language=language, api_key=_akey_dosha)
 
     ai_cache = kundli.get("ai_cache", {}) or {}
     ai_cache[cache_key] = ai_text
@@ -5325,12 +5327,14 @@ async def admin_translate_text(
     admin: dict = Depends(require_role(["super_admin", "content_admin"]))
 ):
     try:
+        _gkey_txt = await get_setting("gemini_api_key")
         result = await _gemini_translate_text(
             source_text=req.text,
             source_language=req.source_language,
             target_languages=req.target_languages,
             context_label=req.context_label,
             model=req.model or "gemini-2.5-flash",
+            api_key=_gkey_txt,
         )
         return {"translations": result, "source_language": req.source_language}
     except Exception as e:
@@ -5353,6 +5357,7 @@ async def admin_translate_verse(
     admin: dict = Depends(require_role(["super_admin", "content_admin"]))
 ):
     try:
+        _gkey_verse = await get_setting("gemini_api_key")
         result = await _gemini_translate_verse(
             source_language=req.source_language,
             target_languages=req.target_languages,
@@ -5360,6 +5365,7 @@ async def admin_translate_verse(
             transliteration=req.transliteration,
             meaning=req.meaning,
             model=req.model or "gemini-2.5-flash",
+            api_key=_gkey_verse,
         )
     except Exception as e:
         logger.exception("Gemini translate_verse failed")
@@ -5755,7 +5761,8 @@ import shutil
 from pathlib import Path as _Path
 from audio_sync_service import parse_sync_file
 
-AUDIO_STATIC_DIR = _Path("/app/backend/static/audio/items")
+_BACKEND_ROOT = _Path(__file__).parent
+AUDIO_STATIC_DIR = _BACKEND_ROOT / "static" / "audio" / "items"
 AUDIO_STATIC_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -6000,12 +6007,12 @@ async def root():
 # defined further down were silently dropped.
 
 # Mount static audio files (uploaded MP3s for content items)
-_AUDIO_DIR = "/app/backend/static/audio"
+_AUDIO_DIR = str(_BACKEND_ROOT / "static" / "audio")
 os.makedirs(_AUDIO_DIR, exist_ok=True)
 app.mount("/api/audio-static", StaticFiles(directory=_AUDIO_DIR), name="audio-static")
 
 # Mount static aarti per-language media (audio/video/thumbnail buckets)
-_AARTI_DIR = "/app/backend/static/aarti"
+_AARTI_DIR = str(_BACKEND_ROOT / "static" / "aarti")
 os.makedirs(_AARTI_DIR, exist_ok=True)
 app.mount("/api/aarti-static", StaticFiles(directory=_AARTI_DIR), name="aarti-static")
 
@@ -6284,13 +6291,19 @@ async def aarti_get_lang_media(item_id: str, lang: str):
         raise HTTPException(status_code=404, detail="Item not found")
     languages = item.get("languages") or {}
     bucket = languages.get(lang) or {}
+    # Fallback: if the per-language bucket has no full_text (item was created via
+    # Quick Create which stores the flat `full_text` field), use the item-level
+    # flat field so the mobile always gets the text even before the Full Text tab
+    # in the drawer has been used.
+    lang_key = "full_text" if lang == "hi" else f"full_text_{lang}"
+    fallback_text = item.get(lang_key) or (item.get("full_text") if lang == "hi" else "") or ""
     return {
         "lang": lang,
         "audio_versions": bucket.get("audio_versions") or [],
         "video": bucket.get("video"),
         "thumbnail": bucket.get("thumbnail"),
         "sync": bucket.get("sync"),
-        "full_text": bucket.get("full_text") or "",
+        "full_text": bucket.get("full_text") or fallback_text,
     }
 
 

@@ -290,7 +290,7 @@ export default function AartiManagerPage() {
                 </th>
                 <th className="text-left px-4 py-3 text-xs font-bold uppercase tracking-wider text-[#7A8690]">Title (Hi/En)</th>
                 <th className="text-left px-4 py-3 text-xs font-bold uppercase tracking-wider text-[#7A8690]">Deity</th>
-                <th className="text-center px-4 py-3 text-xs font-bold uppercase tracking-wider text-[#7A8690]">Verses</th>
+                <th className="text-center px-4 py-3 text-xs font-bold uppercase tracking-wider text-[#7A8690]">Content</th>
                 <th className="text-left px-4 py-3 text-xs font-bold uppercase tracking-wider text-[#7A8690]">Languages</th>
                 <th className="text-center px-4 py-3 text-xs font-bold uppercase tracking-wider text-[#7A8690]">Status</th>
                 <th className="text-right px-4 py-3 text-xs font-bold uppercase tracking-wider text-[#7A8690]">Actions</th>
@@ -326,7 +326,11 @@ export default function AartiManagerPage() {
                   <td className="px-4 py-3">
                     <span className="text-xs px-2 py-1 rounded-full bg-[#FEF0EC] text-[#D08465] font-medium">{item.deity_hi || item.deity || '-'}</span>
                   </td>
-                  <td className="px-4 py-3 text-center text-sm font-medium">{item.total_verses || 0}</td>
+                  <td className="px-4 py-3 text-center text-sm">
+                    {(item.full_text || Object.values(item.languages || {}).some(b => b && b.full_text))
+                      ? <span className="text-green-600 font-semibold">✓ Text</span>
+                      : <span className="text-[#989EA4]">—</span>}
+                  </td>
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap gap-1">
                       {(item.supported_languages || ['hi']).slice(0, 3).map(lang => (

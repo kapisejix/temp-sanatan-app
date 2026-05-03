@@ -65,6 +65,15 @@ export default function ContentDetailScreen({ navigation, route }) {
   const soundRef = useRef(null);
   const beginnerRef = useRef({ active: false, verse: 0, loopCount: 0 });
 
+  // Set audio mode on mount — required for iOS silent-mode playback
+  useEffect(() => {
+    Audio.setAudioModeAsync({
+      playsInSilentModeIOS: true,
+      staysActiveInBackground: false,
+      shouldDuckAndroid: true,
+    }).catch(() => {});
+  }, []);
+
   // ---- Fetch backend item doc (so we know category + supported_languages + languages map) ----
   useEffect(() => {
     let cancel = false;
@@ -265,7 +274,8 @@ export default function ContentDetailScreen({ navigation, route }) {
       sound.setOnPlaybackStatusUpdate(onPlaybackUpdate);
       setPlaying(true);
     } catch (e) {
-      setAudioErr('ऑडियो उत्पन्न नहीं हो सका — Integration Hub में Google Cloud TTS कॉन्फ़िगर करें');
+      const msg = e?.message || String(e) || 'unknown';
+      setAudioErr(`ऑडियो नहीं चला — ${msg}`);
     } finally {
       setLoading(false);
     }

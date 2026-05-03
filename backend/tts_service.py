@@ -142,9 +142,9 @@ async def get_tts_provider(get_setting_fn):
         return GoogleCloudTTSProvider(credentials_json=creds_json or None, api_key=api_key or None)
 
     if provider_name == "openai":
-        api_key = await get_setting_fn("openai_api_key", "") or os.environ.get("EMERGENT_LLM_KEY", "")
+        api_key = await get_setting_fn("openai_api_key", "")
         if not api_key:
-            raise ValueError("OpenAI TTS not configured. Set openai_api_key in Integration Hub.")
+            raise ValueError("OpenAI TTS not configured. Set openai_api_key in Integration Settings → Text-to-Speech.")
         model = await get_setting_fn("tts_default_model", "tts-1")
         return OpenAITTSProvider(api_key=api_key, model=model)
 
